@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "Gfx/Renderer.h"
 #include "Platform/Window.h"
 
 #include <spdlog/spdlog.h>
@@ -16,17 +17,32 @@ int main() {
         return 1;
     }
 
-    spdlog::info("Native HWND: {}", static_cast<void*>(window.GetNativeHandle()));
+    summer::gfx::Renderer renderer;
+#if defined(SUMMER_DEBUG)
+    constexpr bool enableDebugLayer = true;
+#else
+    constexpr bool enableDebugLayer = false;
+#endif
+
+    if (!renderer.Initialize(window, enableDebugLayer)) {
+        spdlog::critical("Failed to initialize renderer");
+        return 1;
+    }
 
     while (!window.ShouldClose()) {
         window.PollEvents();
 
         if (window.WasResized()) {
-            spdlog::info("Window resized: {}x{}", window.GetWidth(), window.GetHeight());
+            renderer.OnResize(
+                static_cast<uint32_t>(window.GetWidth()),
+                static_cast<uint32_t>(window.GetHeight()));
             window.ClearResizedFlag();
         }
+
+        renderer.RenderFrame();
     }
 
+    renderer.Shutdown();
     spdlog::info("Shutting down");
     return 0;
 }

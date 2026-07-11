@@ -115,7 +115,8 @@ project "Engine"
     links { "GLFW" }
 
     filter "system:windows"
-        links { "user32", "gdi32", "shell32", "ole32", "advapi32", "winmm", "setupapi" }
+        defines { "_CRT_SECURE_NO_WARNINGS" }
+        links { "d3d12", "dxgi", "dxguid", "user32", "gdi32", "shell32", "ole32", "advapi32", "winmm", "setupapi" }
 
     filter {}
 
