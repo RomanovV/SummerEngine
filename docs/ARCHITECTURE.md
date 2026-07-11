@@ -1,7 +1,7 @@
 # SummerEngine Architecture
 
 > Sandbox rendering engine for learning and experimenting with D3D12, shaders, and rendering techniques.
-> This document reflects the codebase as of **Step 5** (clear color + ImGui).
+> This document reflects the codebase as of **Step 6** (Assimp mesh loading to CPU).
 
 ---
 
@@ -54,6 +54,11 @@ graph TB
             ImGuiLayer["ImGuiLayer<br/>(UI backends)"]
             Helpers["Helpers<br/>(HRESULT checks)"]
         end
+
+        subgraph Assets["Assets"]
+            ModelLoader["ModelLoader<br/>(Assimp import)"]
+            MeshData["MeshData<br/>(CPU geometry)"]
+        end
     end
 
     subgraph Vendor["Vendor"]
@@ -65,6 +70,9 @@ graph TB
     Main --> Renderer
     Main --> Window
     Main --> Log
+    Main --> ModelLoader
+
+    ModelLoader --> MeshData
 
     Renderer --> Device
     Renderer --> SwapChain
@@ -91,6 +99,7 @@ graph TB
 |---|---|---|
 | `summer::` | `Log`, `Window` | Platform-agnostic engine utilities |
 | `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer` | All D3D12 rendering code |
+| `summer::assets::` | `MeshData`, `ModelLoader` | CPU-side geometry imported from files |
 
 Keeping rendering under `gfx::` leaves room for future subsystems (`assets::`, `scene::`, etc.) without polluting the root namespace.
 
@@ -102,8 +111,9 @@ Startup sequence in `Sandbox/main.cpp`:
 
 ```
 1. Log::Init()
-2. Window creation          → GLFW window + HWND
-3. Renderer::Initialize()
+2. ModelLoader::LoadFromFile()   → CPU MeshData (Step 6)
+3. Window creation               → GLFW window + HWND
+4. Renderer::Initialize()
    ├── Device::Initialize()     → DXGI factory, D3D12 device, queue, fence
    ├── SwapChain::Initialize()  → DXGI swap chain bound to HWND, RTV heap
    └── ImGuiLayer::Initialize() → ImGui context, GLFW+DX12 backends, SRV heap
@@ -157,7 +167,8 @@ sequenceDiagram
 | UI toggles, debug values | `Sandbox/main.cpp` (between `BeginImGuiFrame` and `RenderFrame`) |
 | New render passes / techniques | `Renderer::RenderFrame()` or new methods called from there |
 | Shader / PSO experiments | New files under `Gfx/` + `shaders/` (future step) |
-| Asset loading | Future `Assets/` module (Assimp, Step 6) |
+| Asset loading / mesh import | `Assets/ModelLoader` — returns `MeshData` |
+| Shader / PSO experiments | New files under `Gfx/` + `shaders/` (Step 7) |
 
 ---
 
@@ -232,9 +243,17 @@ The SRV heap uses a simple free-list allocator (`ImGuiLayer::DescriptorAllocator
 premake5.lua
 ├── GLFW       (static lib, C)
 ├── ImGui      (static lib, C++ — core + glfw/dx12 backends)
-├── Engine     (static lib, C++ — links GLFW + ImGui)
+├── Engine     (static lib, C++ — links GLFW + ImGui + Assimp)
 └── Sandbox    (console app, links Engine)
 ```
+
+**Assimp** is built separately via CMake (vendor-only) because Assimp does not ship a Premake script:
+
+```powershell
+.\scripts\build_assimp.ps1
+```
+
+This produces static libs in `vendor/assimp/build/lib/{Debug,Release}/`.
 
 Generate and build:
 
@@ -256,12 +275,31 @@ Debug builds define `SUMMER_DEBUG`, which enables the D3D12 debug layer.
 | Dear ImGui | `vendor/imgui` | Debug UI, experiment controls |
 | spdlog | `vendor/spdlog` | Logging (header-only) |
 | stb | `vendor/stb` | Image loading (future step) |
+| Assimp 6.x | `vendor/assimp` | Mesh import (OBJ, FBX, glTF, …) |
 
-Clone with submodules:
+Clone with submodules, then build Assimp:
 
 ```powershell
 git submodule update --init --recursive
+.\scripts\build_assimp.ps1
 ```
+
+---
+
+## Asset Import Pipeline (Step 6)
+
+```mermaid
+flowchart LR
+    File["assets/models/*.obj"] --> Assimp["Assimp::Importer"]
+    Assimp --> Scene["aiScene"]
+    Scene --> Loader["ModelLoader"]
+    Loader --> MeshData["MeshData<br/>vertices + indices + subMeshes"]
+    MeshData --> Future["Step 7: GPU upload + draw"]
+```
+
+`ModelLoader` walks the scene graph, applies node transforms, and merges all meshes into flat CPU arrays. The `Vertex` layout in `MeshData.h` is the contract you will upload to D3D12 in Step 7.
+
+Default post-process flags: triangulate, generate normals, join identical vertices, improve cache locality.
 
 ---
 
@@ -269,7 +307,7 @@ git submodule update --init --recursive
 
 | Step | What | New modules / files |
 |---|---|---|
-| 6 | Assimp mesh loading | `Assets/ModelLoader` |
+| ~~6~~ | ~~Assimp mesh loading~~ | ~~`Assets/ModelLoader`~~ ✓ |
 | 7 | GPU mesh + draw call | `Gfx/Mesh`, `Gfx/Shader`, `shaders/BasicVS.hlsl` |
 | — | Depth buffer | Extend `SwapChain` + `Renderer` |
 | — | DXC shader build step | `premake5.lua` prebuild command |
@@ -285,5 +323,6 @@ git submodule update --init --recursive
 | `Gfx/Device.cpp` | You need to understand GPU sync or add D3D12 objects |
 | `Gfx/SwapChain.cpp` | You need to change presentation or add depth/stencil |
 | `Gfx/ImGuiLayer.cpp` | You need to debug UI rendering or add texture SRVs |
-| `Platform/Window.cpp` | You need input handling or window behavior changes |
+| `Assets/ModelLoader.cpp` | You want to change import flags or extract more channels |
+| `Assets/MeshData.h` | You change vertex layout before GPU upload |
 | `premake5.lua` | You add source files, libs, or shader build steps |

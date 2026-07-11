@@ -4,6 +4,9 @@ bin/
 obj/
 out/
 
+# Assimp CMake build artifacts (library is linked from here after scripts/build_assimp.ps1)
+vendor/assimp/build/
+
 # Visual Studio
 .vs/
 *.sln

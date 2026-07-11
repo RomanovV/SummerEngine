@@ -1,3 +1,4 @@
+#include "Assets/ModelLoader.h"
 #include "Core/Log.h"
 #include "Gfx/Renderer.h"
 #include "Platform/Window.h"
@@ -8,6 +9,14 @@
 int main() {
     summer::Log::Init();
     spdlog::info("SummerEngine sandbox starting");
+
+    // Step 6: load a test mesh to CPU memory. GPU upload comes in Step 7.
+    constexpr const char* kDefaultModelPath = "assets/models/cube.obj";
+    summer::assets::MeshData meshData;
+    if (!summer::assets::ModelLoader::LoadFromFile(kDefaultModelPath, meshData)) {
+        spdlog::critical("Failed to load default model '{}'", kDefaultModelPath);
+        return 1;
+    }
 
     summer::WindowConfig config;
     config.title = "Summer Sandbox";
@@ -30,7 +39,6 @@ int main() {
         return 1;
     }
 
-    // Shared with the settings panel; drives the per-frame clear color.
     float clearColor[4] = {0.1f, 0.1f, 0.15f, 1.0f};
     renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
 
@@ -44,7 +52,6 @@ int main() {
             window.ClearResizedFlag();
         }
 
-        // --- ImGui UI (add your experiment toggles here) ---
         renderer.BeginImGuiFrame();
 
         ImGui::Begin("Summer Sandbox");
@@ -53,6 +60,12 @@ int main() {
         if (ImGui::ColorEdit4("Clear Color", clearColor)) {
             renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
         }
+
+        ImGui::Separator();
+        ImGui::Text("Loaded mesh: %s", meshData.sourcePath.c_str());
+        ImGui::Text("Vertices: %u", meshData.vertexCount());
+        ImGui::Text("Indices: %u", meshData.indexCount());
+        ImGui::Text("SubMeshes: %zu", meshData.subMeshes.size());
         ImGui::End();
 
         renderer.RenderFrame();

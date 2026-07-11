@@ -62,7 +62,7 @@ project "GLFW"
 
     filter {}
 
--- Vendor: Dear ImGui (compiled now, wired up in a later step)
+-- Vendor: Dear ImGui
 project "ImGui"
     kind "StaticLib"
     language "C++"
@@ -111,10 +111,26 @@ project "Engine"
         "vendor/glfw/include",
         "vendor/stb",
         "vendor/imgui",
-        "vendor/imgui/backends"
+        "vendor/imgui/backends",
+        "vendor/assimp/include",
+        "vendor/assimp/build/include"
     }
 
     links { "GLFW", "ImGui" }
+
+    filter "configurations:Debug"
+        libdirs {
+            "vendor/assimp/build/lib/Debug",
+            "vendor/assimp/build/contrib/zlib/Debug"
+        }
+        links { "assimp-vc143-mtd", "zlibstaticd" }
+
+    filter "configurations:Release"
+        libdirs {
+            "vendor/assimp/build/lib/Release",
+            "vendor/assimp/build/contrib/zlib/Release"
+        }
+        links { "assimp-vc143-mt", "zlibstatic" }
 
     filter "system:windows"
         defines { "_CRT_SECURE_NO_WARNINGS" }
@@ -142,6 +158,9 @@ project "Sandbox"
     }
 
     links { "Engine" }
+
+    -- Run from project root so relative asset paths (assets/models/...) resolve correctly.
+    debugdir "%{wks.location}/.."
 
     filter "system:windows"
         links { "user32", "gdi32", "shell32", "ole32", "advapi32", "winmm", "setupapi" }
