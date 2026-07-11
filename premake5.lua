@@ -113,7 +113,8 @@ project "Engine"
         "vendor/imgui",
         "vendor/imgui/backends",
         "vendor/assimp/include",
-        "vendor/assimp/build/include"
+        "vendor/assimp/build/include",
+        "vendor/renderdoc"
     }
 
     links { "GLFW", "ImGui" }
@@ -159,17 +160,24 @@ project "Sandbox"
 
     links { "Engine" }
 
-    -- Run from project root so relative asset paths (assets/models/...) resolve correctly.
-    debugdir "%{wks.location}/.."
+    -- Assets/shaders are staged next to the exe (postbuild), and paths resolve relative to the
+    -- executable, so the app runs identically from the IDE or when launched standalone by PIX/RenderDoc.
+    debugdir "%{cfg.targetdir}"
 
     filter "configurations:Debug"
         prebuildcommands {
             'powershell -ExecutionPolicy Bypass -File "%{wks.location}/../scripts/compile_shaders.ps1" -Config Debug'
         }
+        postbuildcommands {
+            'powershell -ExecutionPolicy Bypass -File "%{wks.location}/../scripts/stage_assets.ps1" -Config Debug'
+        }
 
     filter "configurations:Release"
         prebuildcommands {
             'powershell -ExecutionPolicy Bypass -File "%{wks.location}/../scripts/compile_shaders.ps1" -Config Release'
+        }
+        postbuildcommands {
+            'powershell -ExecutionPolicy Bypass -File "%{wks.location}/../scripts/stage_assets.ps1" -Config Release'
         }
 
     filter "system:windows"

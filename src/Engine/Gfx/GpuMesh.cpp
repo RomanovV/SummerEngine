@@ -66,6 +66,10 @@ bool GpuMesh::Initialize(Device& device, const summer::assets::MeshData& meshDat
     device.GetCommandQueue()->ExecuteCommandLists(1, commandLists);
     device.WaitForGpu();
 
+    // Safe to release staging buffers once the GPU copy has completed.
+    m_vertexBuffer.ReleaseUploadStaging();
+    m_indexBuffer.ReleaseUploadStaging();
+
     m_vertexBufferView.BufferLocation = m_vertexBuffer.GetResource()->GetGPUVirtualAddress();
     m_vertexBufferView.SizeInBytes = static_cast<UINT>(vertexBufferSize);
     m_vertexBufferView.StrideInBytes = sizeof(summer::assets::Vertex);

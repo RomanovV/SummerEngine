@@ -34,6 +34,9 @@ public:
     void SetClearColor(float r, float g, float b, float a);
     void SetMeshColor(float r, float g, float b, float a);
 
+    // Native ID3D12Device* for GPU capture tool integration. Null before Initialize().
+    void* GetNativeDevice() const;
+
 private:
     void TransitionResource(
         ID3D12Resource* resource,

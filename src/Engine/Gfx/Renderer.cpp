@@ -1,4 +1,5 @@
 #include "Gfx/Renderer.h"
+#include "Core/Paths.h"
 #include "Gfx/Helpers.h"
 
 #include <DirectXMath.h>
@@ -10,13 +11,10 @@
 namespace summer::gfx {
 
 namespace {
-#if defined(SUMMER_DEBUG)
-constexpr const char* kVertexShaderPath = "build/shaders/Debug/BasicVS.cso";
-constexpr const char* kPixelShaderPath = "build/shaders/Debug/BasicPS.cso";
-#else
-constexpr const char* kVertexShaderPath = "build/shaders/Release/BasicVS.cso";
-constexpr const char* kPixelShaderPath = "build/shaders/Release/BasicPS.cso";
-#endif
+// Compiled shaders are staged next to the executable (see scripts/stage_assets.ps1),
+// so they resolve identically whether run from the IDE or launched standalone by PIX/RenderDoc.
+constexpr const char* kVertexShaderRelative = "shaders/BasicVS.cso";
+constexpr const char* kPixelShaderRelative = "shaders/BasicPS.cso";
 } // namespace
 
 Renderer::~Renderer() {
@@ -60,12 +58,14 @@ bool Renderer::SetMesh(const summer::assets::MeshData& meshData) {
         return false;
     }
 
+    const std::string vertexShaderPath = summer::Paths::Resolve(kVertexShaderRelative);
+    const std::string pixelShaderPath = summer::Paths::Resolve(kPixelShaderRelative);
     if (!m_basicPipeline.Initialize(
             m_device,
             m_swapChain.GetFormat(),
             m_swapChain.GetDepthFormat(),
-            kVertexShaderPath,
-            kPixelShaderPath)) {
+            vertexShaderPath.c_str(),
+            pixelShaderPath.c_str())) {
         m_mesh.Shutdown();
         return false;
     }
@@ -107,6 +107,10 @@ void Renderer::SetClearColor(float r, float g, float b, float a) {
     m_clearColor[1] = g;
     m_clearColor[2] = b;
     m_clearColor[3] = a;
+}
+
+void* Renderer::GetNativeDevice() const {
+    return m_device.GetD3D12Device();
 }
 
 void Renderer::SetMeshColor(float r, float g, float b, float a) {
