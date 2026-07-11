@@ -1,7 +1,7 @@
 # SummerEngine Architecture
 
 > Sandbox rendering engine for learning and experimenting with D3D12, shaders, and rendering techniques.
-> This document reflects the codebase as of **Step 6** (Assimp mesh loading to CPU).
+> This document reflects the codebase as of **Step 7** (GPU mesh draw).
 
 ---
 
@@ -50,9 +50,11 @@ graph TB
         subgraph Gfx["Gfx"]
             Renderer["Renderer<br/>(orchestrator)"]
             Device["Device<br/>(D3D12 core)"]
-            SwapChain["SwapChain<br/>(DXGI presentation)"]
+            SwapChain["SwapChain<br/>(DXGI + depth)"]
             ImGuiLayer["ImGuiLayer<br/>(UI backends)"]
-            Helpers["Helpers<br/>(HRESULT checks)"]
+            GpuMesh["GpuMesh<br/>(GPU buffers)"]
+            BasicPipeline["BasicPipeline<br/>(PSO + shaders)"]
+            Buffer["Buffer<br/>(upload helper)"]
         end
 
         subgraph Assets["Assets"]
@@ -111,9 +113,10 @@ Startup sequence in `Sandbox/main.cpp`:
 
 ```
 1. Log::Init()
-2. ModelLoader::LoadFromFile()   → CPU MeshData (Step 6)
-3. Window creation               → GLFW window + HWND
-4. Renderer::Initialize()
+2. ModelLoader::LoadFromFile()   → CPU MeshData
+3. Renderer::SetMesh()           → GPU upload + BasicPipeline init
+4. Window creation               → GLFW window + HWND
+5. Renderer::Initialize()
    ├── Device::Initialize()     → DXGI factory, D3D12 device, queue, fence
    ├── SwapChain::Initialize()  → DXGI swap chain bound to HWND, RTV heap
    └── ImGuiLayer::Initialize() → ImGui context, GLFW+DX12 backends, SRV heap
@@ -153,7 +156,9 @@ sequenceDiagram
         Rnd->>Dev: WaitForBackBuffer(index)
         Rnd->>Dev: Reset allocator + command list
         Rnd->>Rnd: Transition PRESENT → RENDER_TARGET
-        Rnd->>Rnd: ClearRenderTargetView
+        Rnd->>Rnd: Clear RTV + depth
+        Rnd->>Rnd: Bind BasicPipeline, update MVP constants
+        Rnd->>GpuMesh: DrawIndexed
         Rnd->>UI: RenderDrawData (ImGui on top)
         Rnd->>Rnd: Transition RENDER_TARGET → PRESENT
         Rnd->>Dev: ExecuteCommandLists + Present + SignalBackBuffer
@@ -229,6 +234,7 @@ D3D12 uses descriptor heaps instead of bind slots. SummerEngine currently has tw
 | Heap | Type | Owner | Shader-visible? | Purpose |
 |---|---|---|---|---|
 | RTV heap | `D3D12_DESCRIPTOR_HEAP_TYPE_RTV` | `SwapChain` | No | Back buffer render target views |
+| DSV heap | `D3D12_DESCRIPTOR_HEAP_TYPE_DSV` | `SwapChain` | No | Depth-stencil for 3D mesh pass |
 | SRV heap | `D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV` | `ImGuiLayer` | **Yes** | ImGui font atlas + future engine textures |
 
 > **Important:** Only one shader-visible heap can be bound per command list (`SetDescriptorHeaps`). When you add engine textures, allocate from the same SRV heap (or redesign heap management).
@@ -258,10 +264,13 @@ This produces static libs in `vendor/assimp/build/lib/{Debug,Release}/`.
 Generate and build:
 
 ```powershell
+.\scripts\compile_shaders.ps1 -Config Debug   # or via Sandbox prebuild
 .\vendor\premake\premake5.exe vs2022
 msbuild build\SummerEngine.sln /p:Configuration=Debug /p:Platform=x64
 .\build\bin\Debug\Sandbox.exe
 ```
+
+HLSL sources live in `shaders/`. Compiled bytecode goes to `build/shaders/{Debug,Release}/`.
 
 Debug builds define `SUMMER_DEBUG`, which enables the D3D12 debug layer.
 
@@ -294,12 +303,12 @@ flowchart LR
     Assimp --> Scene["aiScene"]
     Scene --> Loader["ModelLoader"]
     Loader --> MeshData["MeshData<br/>vertices + indices + subMeshes"]
-    MeshData --> Future["Step 7: GPU upload + draw"]
+    MeshData --> Future["GpuMesh upload + draw"]
 ```
 
-`ModelLoader` walks the scene graph, applies node transforms, and merges all meshes into flat CPU arrays. The `Vertex` layout in `MeshData.h` is the contract you will upload to D3D12 in Step 7.
+`ModelLoader` walks the scene graph, applies node transforms, and merges all meshes into flat CPU arrays. `Renderer::SetMesh()` uploads to GPU via `GpuMesh` and initializes `BasicPipeline` (root signature, PSO, constant buffer).
 
-Default post-process flags: triangulate, generate normals, join identical vertices, improve cache locality.
+Shaders (`shaders/BasicVS.hlsl`, `shaders/BasicPS.hlsl`) are yours to experiment with. The C++ side only loads compiled `.cso` bytecode.
 
 ---
 
@@ -307,10 +316,10 @@ Default post-process flags: triangulate, generate normals, join identical vertic
 
 | Step | What | New modules / files |
 |---|---|---|
-| ~~6~~ | ~~Assimp mesh loading~~ | ~~`Assets/ModelLoader`~~ ✓ |
-| 7 | GPU mesh + draw call | `Gfx/Mesh`, `Gfx/Shader`, `shaders/BasicVS.hlsl` |
-| — | Depth buffer | Extend `SwapChain` + `Renderer` |
-| — | DXC shader build step | `premake5.lua` prebuild command |
+| ~~7~~ | ~~GPU mesh + draw call~~ | ~~`Gfx/GpuMesh`, `Gfx/BasicPipeline`, `shaders/`~~ ✓ |
+| — | Depth buffer | ✓ (added in Step 7) |
+| — | DXC shader build step | ✓ (`scripts/compile_shaders.ps1`) |
+| 8+ | Your rendering experiments | PBR, bindless, debug views, etc. |
 
 ---
 
@@ -323,6 +332,8 @@ Default post-process flags: triangulate, generate normals, join identical vertic
 | `Gfx/Device.cpp` | You need to understand GPU sync or add D3D12 objects |
 | `Gfx/SwapChain.cpp` | You need to change presentation or add depth/stencil |
 | `Gfx/ImGuiLayer.cpp` | You need to debug UI rendering or add texture SRVs |
-| `Assets/ModelLoader.cpp` | You want to change import flags or extract more channels |
-| `Assets/MeshData.h` | You change vertex layout before GPU upload |
+| `Gfx/BasicPipeline.cpp` | You change root signature, PSO, or constant layout |
+| `Gfx/GpuMesh.cpp` | You change buffer upload or draw call setup |
+| `shaders/BasicVS.hlsl` | Vertex shader experiments |
+| `shaders/BasicPS.hlsl` | Pixel shader / lighting experiments |
 | `premake5.lua` | You add source files, libs, or shader build steps |

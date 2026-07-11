@@ -18,7 +18,7 @@ Device::~Device() {
 }
 
 bool Device::Initialize(bool enableDebugLayer) {
-#if defined(SUMMER_DEBUG)
+#ifdef SUMMER_DEBUG
     if (enableDebugLayer) {
         ComPtr<ID3D12Debug> debugController;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
@@ -31,7 +31,7 @@ bool Device::Initialize(bool enableDebugLayer) {
 #endif
 
     uint32_t dxgiFactoryFlags = 0;
-#if defined(SUMMER_DEBUG)
+#ifdef SUMMER_DEBUG
     if (enableDebugLayer) {
         dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
     }

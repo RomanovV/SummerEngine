@@ -162,6 +162,16 @@ project "Sandbox"
     -- Run from project root so relative asset paths (assets/models/...) resolve correctly.
     debugdir "%{wks.location}/.."
 
+    filter "configurations:Debug"
+        prebuildcommands {
+            'powershell -ExecutionPolicy Bypass -File "%{wks.location}/../scripts/compile_shaders.ps1" -Config Debug'
+        }
+
+    filter "configurations:Release"
+        prebuildcommands {
+            'powershell -ExecutionPolicy Bypass -File "%{wks.location}/../scripts/compile_shaders.ps1" -Config Release'
+        }
+
     filter "system:windows"
         links { "user32", "gdi32", "shell32", "ole32", "advapi32", "winmm", "setupapi" }
 

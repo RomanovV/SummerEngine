@@ -10,7 +10,6 @@ int main() {
     summer::Log::Init();
     spdlog::info("SummerEngine sandbox starting");
 
-    // Step 6: load a test mesh to CPU memory. GPU upload comes in Step 7.
     constexpr const char* kDefaultModelPath = "assets/models/cube.obj";
     summer::assets::MeshData meshData;
     if (!summer::assets::ModelLoader::LoadFromFile(kDefaultModelPath, meshData)) {
@@ -39,8 +38,15 @@ int main() {
         return 1;
     }
 
+    if (!renderer.SetMesh(meshData)) {
+        spdlog::critical("Failed to upload mesh to GPU");
+        return 1;
+    }
+
     float clearColor[4] = {0.1f, 0.1f, 0.15f, 1.0f};
+    float meshColor[4] = {0.85f, 0.55f, 0.25f, 1.0f};
     renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+    renderer.SetMeshColor(meshColor[0], meshColor[1], meshColor[2], meshColor[3]);
 
     while (!window.ShouldClose()) {
         window.PollEvents();
@@ -59,6 +65,9 @@ int main() {
         ImGui::Text("Resolution: %d x %d", window.GetWidth(), window.GetHeight());
         if (ImGui::ColorEdit4("Clear Color", clearColor)) {
             renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+        }
+        if (ImGui::ColorEdit4("Mesh Color", meshColor)) {
+            renderer.SetMeshColor(meshColor[0], meshColor[1], meshColor[2], meshColor[3]);
         }
 
         ImGui::Separator();

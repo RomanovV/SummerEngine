@@ -23,7 +23,6 @@ bool SwapChain::Initialize(Device& device, HWND hwnd, uint32_t width, uint32_t h
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.BufferCount = FrameCount;
-    // Flip-discard is the modern DXGI presentation model for D3D12.
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     ComPtr<IDXGISwapChain1> swapChain1;
@@ -39,7 +38,6 @@ bool SwapChain::Initialize(Device& device, HWND hwnd, uint32_t width, uint32_t h
         return false;
     }
 
-    // Prevent DXGI from handling Alt+Enter fullscreen; GLFW owns the window.
     if (!CheckHRESULT(
             device.GetFactory()->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER),
             "MakeWindowAssociation")) {
@@ -63,8 +61,14 @@ bool SwapChain::Initialize(Device& device, HWND hwnd, uint32_t width, uint32_t h
 }
 
 void SwapChain::Shutdown() {
+    m_depthStencil.Reset();
     for (auto& renderTarget : m_renderTargets) {
         renderTarget.Reset();
+    }
+
+    if (m_dsvHeap) {
+        m_dsvHeap->Release();
+        m_dsvHeap = nullptr;
     }
 
     if (m_rtvHeap) {
@@ -93,7 +97,7 @@ bool SwapChain::Resize(Device& device, uint32_t width, uint32_t height) {
         return true;
     }
 
-    // Release references to the old back buffers before ResizeBuffers.
+    m_depthStencil.Reset();
     for (auto& renderTarget : m_renderTargets) {
         renderTarget.Reset();
     }
@@ -117,6 +121,74 @@ bool SwapChain::Resize(Device& device, uint32_t width, uint32_t height) {
     }
 
     spdlog::info("Swap chain resized ({}x{})", width, height);
+    return true;
+}
+
+bool SwapChain::CreateDepthBuffer(Device& device) {
+    m_depthStencil.Reset();
+
+    if (m_dsvHeap) {
+        m_dsvHeap->Release();
+        m_dsvHeap = nullptr;
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc{};
+    dsvHeapDesc.NumDescriptors = 1;
+    dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    ComPtr<ID3D12DescriptorHeap> dsvHeap;
+    if (!CheckHRESULT(
+            device.GetD3D12Device()->CreateDescriptorHeap(
+                &dsvHeapDesc,
+                IID_PPV_ARGS(&dsvHeap)),
+            "CreateDescriptorHeap DSV")) {
+        return false;
+    }
+
+    dsvHeap->AddRef();
+    m_dsvHeap = dsvHeap.Get();
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC depthDesc{};
+    depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    depthDesc.Width = m_width;
+    depthDesc.Height = m_height;
+    depthDesc.DepthOrArraySize = 1;
+    depthDesc.MipLevels = 1;
+    depthDesc.Format = m_depthFormat;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE clearValue{};
+    clearValue.Format = m_depthFormat;
+    clearValue.DepthStencil.Depth = 1.0f;
+    clearValue.DepthStencil.Stencil = 0;
+
+    if (!CheckHRESULT(
+            device.GetD3D12Device()->CreateCommittedResource(
+                &heapProps,
+                D3D12_HEAP_FLAG_NONE,
+                &depthDesc,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &clearValue,
+                IID_PPV_ARGS(&m_depthStencil)),
+            "CreateCommittedResource depth buffer")) {
+        return false;
+    }
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+    dsvDesc.Format = m_depthFormat;
+    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+
+    device.GetD3D12Device()->CreateDepthStencilView(
+        m_depthStencil.Get(),
+        &dsvDesc,
+        m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+
     return true;
 }
 
@@ -165,14 +237,13 @@ bool SwapChain::CreateRenderTargets(Device& device) {
         rtvHandle.ptr += static_cast<SIZE_T>(m_rtvDescriptorSize);
     }
 
-    return true;
+    return CreateDepthBuffer(device);
 }
 
 void SwapChain::Present() {
     if (!m_swapChain) {
         return;
     }
-    // Sync interval 1 = vsync on. Change to 0 for uncapped framerate during profiling.
     CheckHRESULT(m_swapChain->Present(1, 0), "Present");
 }
 
@@ -194,6 +265,10 @@ D3D12_CPU_DESCRIPTOR_HANDLE SwapChain::GetRTV(uint32_t index) const {
     D3D12_CPU_DESCRIPTOR_HANDLE handle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     handle.ptr += static_cast<SIZE_T>(index) * static_cast<SIZE_T>(m_rtvDescriptorSize);
     return handle;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE SwapChain::GetDSV() const {
+    return m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 }
 
 } // namespace summer::gfx
