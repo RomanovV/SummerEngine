@@ -6,12 +6,16 @@
 
 namespace summer::gfx {
 
+// Must match swap chain BufferCount. Each back buffer gets its own command allocator
+// and fence tracking so the CPU can record the next frame while the GPU is still busy.
 static constexpr uint32_t FrameCount = 2;
 
 struct FrameContext {
     ID3D12CommandAllocator* CommandAllocator = nullptr;
 };
 
+// Owns core D3D12 objects: device, command queue, command list, and GPU fence.
+// Does NOT own the swap chain -- that lives in SwapChain.
 class Device {
 public:
     Device() = default;
@@ -23,7 +27,10 @@ public:
     bool Initialize(bool enableDebugLayer = true);
     void Shutdown();
 
+    // Blocks until all submitted GPU work completes. Used during shutdown and resize.
     void WaitForGpu();
+
+    // Per-back-buffer sync: wait before reusing a buffer the GPU may still be reading.
     void WaitForBackBuffer(uint32_t backBufferIndex);
     void SignalBackBuffer(uint32_t backBufferIndex);
 
@@ -43,7 +50,7 @@ private:
     HANDLE m_fenceEvent = nullptr;
 
     FrameContext m_frames[FrameCount]{};
-    uint64_t m_fenceValues[FrameCount]{};
+    uint64_t m_fenceValues[FrameCount]{}; // Last signaled fence value per back buffer
     uint64_t m_fenceCounter = 0;
 };
 

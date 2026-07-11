@@ -12,6 +12,8 @@ using HWND = HWND__*;
 
 namespace summer::gfx {
 
+// DXGI swap chain and its render-target views (RTVs).
+// FrameCount back buffers in flip-discard mode, matching Device::FrameCount.
 class SwapChain {
 public:
     SwapChain() = default;
@@ -23,6 +25,7 @@ public:
     bool Initialize(Device& device, HWND hwnd, uint32_t width, uint32_t height);
     void Shutdown();
 
+    // Caller must call Device::WaitForGpu() before Resize.
     bool Resize(Device& device, uint32_t width, uint32_t height);
 
     void Present();

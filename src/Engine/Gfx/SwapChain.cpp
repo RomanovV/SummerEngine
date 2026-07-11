@@ -23,6 +23,7 @@ bool SwapChain::Initialize(Device& device, HWND hwnd, uint32_t width, uint32_t h
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.BufferCount = FrameCount;
+    // Flip-discard is the modern DXGI presentation model for D3D12.
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     ComPtr<IDXGISwapChain1> swapChain1;
@@ -38,6 +39,7 @@ bool SwapChain::Initialize(Device& device, HWND hwnd, uint32_t width, uint32_t h
         return false;
     }
 
+    // Prevent DXGI from handling Alt+Enter fullscreen; GLFW owns the window.
     if (!CheckHRESULT(
             device.GetFactory()->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER),
             "MakeWindowAssociation")) {
@@ -91,18 +93,17 @@ bool SwapChain::Resize(Device& device, uint32_t width, uint32_t height) {
         return true;
     }
 
+    // Release references to the old back buffers before ResizeBuffers.
     for (auto& renderTarget : m_renderTargets) {
         renderTarget.Reset();
     }
 
-    DXGI_SWAP_CHAIN_DESC1 desc1{};
-    desc1.Format = m_format;
     if (!CheckHRESULT(
             m_swapChain->ResizeBuffers(
                 FrameCount,
                 width,
                 height,
-                desc1.Format,
+                m_format,
                 DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH),
             "ResizeBuffers")) {
         return false;
@@ -171,6 +172,7 @@ void SwapChain::Present() {
     if (!m_swapChain) {
         return;
     }
+    // Sync interval 1 = vsync on. Change to 0 for uncapped framerate during profiling.
     CheckHRESULT(m_swapChain->Present(1, 0), "Present");
 }
 

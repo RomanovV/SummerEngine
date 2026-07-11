@@ -44,6 +44,7 @@ bool Device::Initialize(bool enableDebugLayer) {
         return false;
     }
 
+    // Pick the first hardware adapter that can create a D3D12 device.
     ComPtr<IDXGIAdapter1> adapter;
     ComPtr<ID3D12Device> device;
     for (UINT adapterIndex = 0;
@@ -88,6 +89,7 @@ bool Device::Initialize(bool enableDebugLayer) {
         return false;
     }
 
+    // One command allocator per back buffer so we can record frames in parallel with GPU execution.
     for (uint32_t frameIndex = 0; frameIndex < FrameCount; ++frameIndex) {
         ComPtr<ID3D12CommandAllocator> allocator;
         if (!CheckHRESULT(
@@ -101,6 +103,7 @@ bool Device::Initialize(bool enableDebugLayer) {
         m_frames[frameIndex].CommandAllocator = allocator.Get();
     }
 
+    // Create in the recording state, then immediately close -- standard D3D12 init pattern.
     ComPtr<ID3D12GraphicsCommandList> commandList;
     if (!CheckHRESULT(
             device->CreateCommandList(
@@ -129,6 +132,7 @@ bool Device::Initialize(bool enableDebugLayer) {
         return false;
     }
 
+    // Transfer ComPtr ownership to raw pointers (released in Shutdown).
     factory->AddRef();
     device->AddRef();
     commandQueue->AddRef();
@@ -207,6 +211,7 @@ void Device::WaitForGpu() {
         WaitForSingleObject(m_fenceEvent, INFINITE);
     }
 
+    // Reset per-buffer tracking so a subsequent resize starts from a clean slate.
     for (uint64_t& value : m_fenceValues) {
         value = 0;
     }

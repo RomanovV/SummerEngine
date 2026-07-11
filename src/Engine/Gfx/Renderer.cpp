@@ -23,6 +23,12 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         return false;
     }
 
+    if (!m_imguiLayer.Initialize(window, m_device, m_swapChain)) {
+        m_swapChain.Shutdown();
+        m_device.Shutdown();
+        return false;
+    }
+
     m_initialized = true;
     spdlog::info("Renderer initialized");
     return true;
@@ -33,7 +39,10 @@ void Renderer::Shutdown() {
         return;
     }
 
+    // GPU must finish before releasing any resources ImGui/D3D12 still reference.
     m_device.WaitForGpu();
+
+    m_imguiLayer.Shutdown();
     m_swapChain.Shutdown();
     m_device.Shutdown();
     m_initialized = false;
@@ -41,6 +50,7 @@ void Renderer::Shutdown() {
 
 void Renderer::OnResize(uint32_t width, uint32_t height) {
     if (!m_initialized || width == 0 || height == 0) {
+        // GLFW reports 0x0 when minimized; skip until we get a valid size again.
         return;
     }
 
@@ -53,6 +63,10 @@ void Renderer::SetClearColor(float r, float g, float b, float a) {
     m_clearColor[1] = g;
     m_clearColor[2] = b;
     m_clearColor[3] = a;
+}
+
+void Renderer::BeginImGuiFrame() {
+    m_imguiLayer.BeginFrame();
 }
 
 void Renderer::TransitionResource(
@@ -75,6 +89,8 @@ void Renderer::RenderFrame() {
     }
 
     const uint32_t backBufferIndex = m_swapChain.GetCurrentBackBufferIndex();
+
+    // Don't touch this back buffer until the GPU finished the frame that last used it.
     m_device.WaitForBackBuffer(backBufferIndex);
 
     FrameContext& frame = m_device.GetFrame(backBufferIndex);
@@ -93,6 +109,7 @@ void Renderer::RenderFrame() {
         return;
     }
 
+    // --- Main pass: clear back buffer, draw ImGui on top ---
     TransitionResource(
         backBuffer,
         D3D12_RESOURCE_STATE_PRESENT,
@@ -101,6 +118,9 @@ void Renderer::RenderFrame() {
     const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_swapChain.GetRTV(backBufferIndex);
     m_device.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     m_device.GetCommandList()->ClearRenderTargetView(rtv, m_clearColor, 0, nullptr);
+
+    // ImGui draws while the back buffer is still a render target.
+    m_imguiLayer.RenderDrawData(m_device.GetCommandList());
 
     TransitionResource(
         backBuffer,

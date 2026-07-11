@@ -109,10 +109,12 @@ project "Engine"
         "src/Engine",
         "vendor/spdlog/include",
         "vendor/glfw/include",
-        "vendor/stb"
+        "vendor/stb",
+        "vendor/imgui",
+        "vendor/imgui/backends"
     }
 
-    links { "GLFW" }
+    links { "GLFW", "ImGui" }
 
     filter "system:windows"
         defines { "_CRT_SECURE_NO_WARNINGS" }
@@ -135,7 +137,8 @@ project "Sandbox"
 
     includedirs {
         "src/Engine",
-        "vendor/spdlog/include"
+        "vendor/spdlog/include",
+        "vendor/imgui"
     }
 
     links { "Engine" }

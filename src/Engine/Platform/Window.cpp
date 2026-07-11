@@ -9,6 +9,7 @@
 namespace summer {
 
 namespace {
+// GLFW init/terminate must happen exactly once per process.
 int s_glfwRefCount = 0;
 } // namespace
 
@@ -20,6 +21,7 @@ Window::Window(const WindowConfig& config) {
         }
     }
 
+    // No graphics context -- we only need the HWND for DXGI.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, config.resizable ? GLFW_TRUE : GLFW_FALSE);
 

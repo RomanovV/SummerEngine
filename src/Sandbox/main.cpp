@@ -2,6 +2,7 @@
 #include "Gfx/Renderer.h"
 #include "Platform/Window.h"
 
+#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 int main() {
@@ -29,6 +30,10 @@ int main() {
         return 1;
     }
 
+    // Shared with the settings panel; drives the per-frame clear color.
+    float clearColor[4] = {0.1f, 0.1f, 0.15f, 1.0f};
+    renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+
     while (!window.ShouldClose()) {
         window.PollEvents();
 
@@ -38,6 +43,17 @@ int main() {
                 static_cast<uint32_t>(window.GetHeight()));
             window.ClearResizedFlag();
         }
+
+        // --- ImGui UI (add your experiment toggles here) ---
+        renderer.BeginImGuiFrame();
+
+        ImGui::Begin("Summer Sandbox");
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+        ImGui::Text("Resolution: %d x %d", window.GetWidth(), window.GetHeight());
+        if (ImGui::ColorEdit4("Clear Color", clearColor)) {
+            renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+        }
+        ImGui::End();
 
         renderer.RenderFrame();
     }

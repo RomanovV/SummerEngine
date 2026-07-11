@@ -15,6 +15,8 @@ struct WindowConfig {
     bool resizable = true;
 };
 
+// Thin GLFW wrapper. Creates a Win32 HWND without an OpenGL/Vulkan context
+// so D3D12 owns all GPU resource creation via the native handle.
 class Window {
 public:
     explicit Window(const WindowConfig& config);
@@ -31,6 +33,7 @@ public:
     bool WasResized() const { return m_resized; }
     void ClearResizedFlag() { m_resized = false; }
 
+    // Passed to DXGI CreateSwapChainForHwnd.
     HWND GetNativeHandle() const;
     void* GetGLFWHandle() const { return m_handle; }
 
