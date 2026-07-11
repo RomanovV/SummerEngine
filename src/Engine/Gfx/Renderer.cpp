@@ -1,4 +1,5 @@
 #include "Gfx/Renderer.h"
+#include "Assets/Image.h"
 #include "Core/Paths.h"
 #include "Gfx/Helpers.h"
 
@@ -15,6 +16,9 @@ namespace {
 // so they resolve identically whether run from the IDE or launched standalone by PIX/RenderDoc.
 constexpr const char* kVertexShaderRelative = "shaders/BasicVS.cso";
 constexpr const char* kPixelShaderRelative = "shaders/BasicPS.cso";
+
+// Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures. Grow as content grows.
+constexpr uint32_t kSrvHeapCapacity = 1024;
 } // namespace
 
 Renderer::~Renderer() {
@@ -38,7 +42,26 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         return false;
     }
 
-    if (!m_imguiLayer.Initialize(window, m_device, m_swapChain)) {
+    if (!m_srvHeap.Initialize(m_device.GetD3D12Device(), kSrvHeapCapacity)) {
+        m_swapChain.Shutdown();
+        m_device.Shutdown();
+        return false;
+    }
+
+    // Default base color: a checkerboard so the texturing path is always valid, even
+    // before any real texture is loaded.
+    const summer::assets::Image checker = summer::assets::Image::MakeCheckerboard();
+    if (!m_defaultTexture.CreateFromImage(m_device, m_srvHeap, checker, /*srgb=*/true)) {
+        m_srvHeap.Shutdown();
+        m_swapChain.Shutdown();
+        m_device.Shutdown();
+        return false;
+    }
+    m_material.baseColor = &m_defaultTexture;
+
+    if (!m_imguiLayer.Initialize(window, m_device, m_swapChain, m_srvHeap)) {
+        m_defaultTexture.Shutdown();
+        m_srvHeap.Shutdown();
         m_swapChain.Shutdown();
         m_device.Shutdown();
         return false;
@@ -46,6 +69,22 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
 
     m_initialized = true;
     spdlog::info("Renderer initialized");
+    return true;
+}
+
+bool Renderer::LoadBaseColorTexture(const std::string& path, bool srgb) {
+    if (!m_initialized) {
+        return false;
+    }
+
+    m_baseColorTexture.Shutdown();
+    if (!m_baseColorTexture.CreateFromFile(m_device, m_srvHeap, path, srgb)) {
+        spdlog::warn("Falling back to default checkerboard for '{}'", path);
+        m_material.baseColor = &m_defaultTexture;
+        return false;
+    }
+
+    m_material.baseColor = &m_baseColorTexture;
     return true;
 }
 
@@ -85,7 +124,14 @@ void Renderer::Shutdown() {
     m_hasMesh = false;
     m_mesh.Shutdown();
     m_basicPipeline.Shutdown();
+
+    // Textures free their SRV slots, so release them (and ImGui) before the heap.
+    m_baseColorTexture.Shutdown();
+    m_defaultTexture.Shutdown();
+    m_material.baseColor = nullptr;
+
     m_imguiLayer.Shutdown();
+    m_srvHeap.Shutdown();
     m_swapChain.Shutdown();
     m_device.Shutdown();
     m_initialized = false;
@@ -111,13 +157,6 @@ void Renderer::SetClearColor(float r, float g, float b, float a) {
 
 void* Renderer::GetNativeDevice() const {
     return m_device.GetD3D12Device();
-}
-
-void Renderer::SetMeshColor(float r, float g, float b, float a) {
-    m_meshColor[0] = r;
-    m_meshColor[1] = g;
-    m_meshColor[2] = b;
-    m_meshColor[3] = a;
 }
 
 void Renderer::BeginImGuiFrame() {
@@ -217,11 +256,17 @@ void Renderer::RenderFrame() {
         m_device.GetCommandList()->RSSetViewports(1, &viewport);
         m_device.GetCommandList()->RSSetScissorRects(1, &scissor);
 
+        // Bind the shared shader-visible heap so the base color SRV table resolves.
+        ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
+        m_device.GetCommandList()->SetDescriptorHeaps(1, heaps);
+
         m_basicPipeline.Bind(m_device.GetCommandList());
 
         const DirectX::XMFLOAT4X4 mvp = BuildMvpMatrix();
-        const DirectX::XMFLOAT4 meshColor(m_meshColor[0], m_meshColor[1], m_meshColor[2], m_meshColor[3]);
-        m_basicPipeline.UpdateConstants(m_device.GetCommandList(), mvp, meshColor);
+        m_basicPipeline.UpdateConstants(m_device.GetCommandList(), mvp);
+
+        const Texture2D* baseColor = m_material.baseColor ? m_material.baseColor : &m_defaultTexture;
+        m_basicPipeline.SetBaseColorTexture(m_device.GetCommandList(), baseColor->GetSrvGpu());
 
         m_mesh.Draw(m_device.GetCommandList());
     }

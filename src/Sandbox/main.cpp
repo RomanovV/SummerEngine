@@ -55,9 +55,7 @@ int main() {
         renderer.GetNativeDevice(), window.GetNativeHandle());
 
     float clearColor[4] = {0.1f, 0.1f, 0.15f, 1.0f};
-    float meshColor[4] = {0.85f, 0.55f, 0.25f, 1.0f};
     renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
-    renderer.SetMeshColor(meshColor[0], meshColor[1], meshColor[2], meshColor[3]);
 
     while (!window.ShouldClose()) {
         window.PollEvents();
@@ -77,11 +75,9 @@ int main() {
         if (ImGui::ColorEdit4("Clear Color", clearColor)) {
             renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
         }
-        if (ImGui::ColorEdit4("Mesh Color", meshColor)) {
-            renderer.SetMeshColor(meshColor[0], meshColor[1], meshColor[2], meshColor[3]);
-        }
 
         ImGui::Separator();
+        ImGui::Text("Base color: default checkerboard (Phase 0 texture pipeline)");
         ImGui::Text("Loaded mesh: %s", meshData.sourcePath.c_str());
         ImGui::Text("Vertices: %u", meshData.vertexCount());
         ImGui::Text("Indices: %u", meshData.indexCount());

@@ -67,16 +67,43 @@ bool BasicPipeline::LoadShaderBytecode(const char* path, std::vector<uint8_t>& o
 }
 
 bool BasicPipeline::CreateRootSignature(Device& device) {
-    D3D12_ROOT_PARAMETER1 rootParameter{};
-    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rootParameter.Descriptor.RegisterSpace = 0;
-    rootParameter.Descriptor.ShaderRegister = 0;
+    // Param 0: CBV b0 (per-frame constants). Param 1: SRV table t0 (base color texture).
+    D3D12_DESCRIPTOR_RANGE1 srvRange{};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0; // t0
+    srvRange.RegisterSpace = 0;
+    srvRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER1 rootParameters[2]{};
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParameters[0].Descriptor.RegisterSpace = 0;
+    rootParameters[0].Descriptor.ShaderRegister = 0;
+
+    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &srvRange;
+
+    // Static sampler s0 (trilinear, wrap) -- avoids needing a separate sampler heap.
+    D3D12_STATIC_SAMPLER_DESC sampler{};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0; // s0
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootDesc{};
     rootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    rootDesc.Desc_1_1.NumParameters = 1;
-    rootDesc.Desc_1_1.pParameters = &rootParameter;
+    rootDesc.Desc_1_1.NumParameters = _countof(rootParameters);
+    rootDesc.Desc_1_1.pParameters = rootParameters;
+    rootDesc.Desc_1_1.NumStaticSamplers = 1;
+    rootDesc.Desc_1_1.pStaticSamplers = &sampler;
     rootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> signature;
@@ -149,9 +176,7 @@ bool BasicPipeline::CreatePipelineState(
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    // Our OBJ meshes author front faces as counter-clockwise; with the LH view/proj that
-    // makes CCW the front-facing winding. FALSE here would cull the visible faces instead.
-    psoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
     psoDesc.RasterizerState.DepthBias = 0;
     psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
     psoDesc.RasterizerState.SlopeScaledDepthBias = 0.0f;
@@ -218,15 +243,19 @@ void BasicPipeline::Bind(ID3D12GraphicsCommandList* commandList) {
 
 void BasicPipeline::UpdateConstants(
     ID3D12GraphicsCommandList* commandList,
-    const DirectX::XMFLOAT4X4& mvp,
-    const DirectX::XMFLOAT4& meshColor) {
+    const DirectX::XMFLOAT4X4& mvp) {
     auto* constants = reinterpret_cast<FrameConstants*>(m_constantBufferMapped);
     constants->mvp = mvp;
-    constants->meshColor = meshColor;
 
     commandList->SetGraphicsRootConstantBufferView(
         0,
         m_constantBuffer->GetGPUVirtualAddress());
+}
+
+void BasicPipeline::SetBaseColorTexture(
+    ID3D12GraphicsCommandList* commandList,
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle) {
+    commandList->SetGraphicsRootDescriptorTable(1, srvGpuHandle);
 }
 
 } // namespace summer::gfx

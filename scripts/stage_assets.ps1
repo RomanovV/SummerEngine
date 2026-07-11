@@ -21,7 +21,9 @@ New-Item -ItemType Directory -Force -Path $ExeDir | Out-Null
 if (Test-Path $ShaderSrc) {
     New-Item -ItemType Directory -Force -Path $ShaderDst | Out-Null
     Copy-Item -Path (Join-Path $ShaderSrc "*.cso") -Destination $ShaderDst -Force -ErrorAction SilentlyContinue
-    Write-Host "Staged shaders -> $ShaderDst"
+    # Stage shader PDBs too so PIX/RenderDoc can resolve shader debug symbols standalone.
+    Copy-Item -Path (Join-Path $ShaderSrc "*.pdb") -Destination $ShaderDst -Force -ErrorAction SilentlyContinue
+    Write-Host "Staged shaders (+pdb) -> $ShaderDst"
 } else {
     Write-Warning "Shader output '$ShaderSrc' not found; run compile_shaders.ps1 first."
 }

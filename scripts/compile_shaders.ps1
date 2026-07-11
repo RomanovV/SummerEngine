@@ -29,16 +29,23 @@ $shaders = @(
 foreach ($shader in $shaders) {
     $inputPath = Join-Path $ShaderDir "$($shader.Name).hlsl"
     $outputPath = Join-Path $OutDir "$($shader.Name).cso"
+    $pdbPath = Join-Path $OutDir "$($shader.Name).pdb"
 
+    # -Zi embeds source-level debug info; -Fd writes it to a separate PDB that PIX/RenderDoc
+    # can load for shader debugging. -Qembed_debug also keeps it in the .cso so RenderDoc can
+    # read it directly even without the PDB search path configured.
     & $dxc.FullName `
         -T $shader.Type `
         -E main `
+        -Zi `
+        -Qembed_debug `
         -Fo $outputPath `
+        -Fd $pdbPath `
         $inputPath
 
     if ($LASTEXITCODE -ne 0) {
         throw "DXC failed for $($shader.Name)"
     }
 
-    Write-Host "Compiled $($shader.Name) -> $outputPath"
+    Write-Host "Compiled $($shader.Name) -> $outputPath (pdb: $pdbPath)"
 }

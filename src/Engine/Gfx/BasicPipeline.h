@@ -12,7 +12,6 @@ class Device;
 // Per-frame constants for the basic mesh shader. Must remain 256-byte aligned for CBV rules.
 struct alignas(256) FrameConstants {
     DirectX::XMFLOAT4X4 mvp;
-    DirectX::XMFLOAT4 meshColor;
 };
 
 // Loads compiled DXIL (.cso), builds root signature + PSO for the basic mesh pass.
@@ -35,8 +34,12 @@ public:
     void Bind(ID3D12GraphicsCommandList* commandList);
     void UpdateConstants(
         ID3D12GraphicsCommandList* commandList,
-        const DirectX::XMFLOAT4X4& mvp,
-        const DirectX::XMFLOAT4& meshColor);
+        const DirectX::XMFLOAT4X4& mvp);
+
+    // Binds the base color texture SRV (must live in the currently-bound shader-visible heap).
+    void SetBaseColorTexture(
+        ID3D12GraphicsCommandList* commandList,
+        D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle);
 
     ID3D12RootSignature* GetRootSignature() const { return m_rootSignature; }
 
