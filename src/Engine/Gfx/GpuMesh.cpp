@@ -82,15 +82,31 @@ bool GpuMesh::Initialize(Device& device, const summer::assets::MeshData& meshDat
     return true;
 }
 
+void GpuMesh::Bind(ID3D12GraphicsCommandList* commandList) const {
+    if (!commandList || m_indexCount == 0) {
+        return;
+    }
+    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+    commandList->IASetIndexBuffer(&m_indexBufferView);
+}
+
+void GpuMesh::DrawSubMesh(
+    ID3D12GraphicsCommandList* commandList,
+    uint32_t indexOffset,
+    uint32_t indexCount) const {
+    if (!commandList || indexCount == 0) {
+        return;
+    }
+    commandList->DrawIndexedInstanced(indexCount, 1, indexOffset, 0, 0);
+}
+
 void GpuMesh::Draw(ID3D12GraphicsCommandList* commandList) const {
     if (!commandList || m_indexCount == 0) {
         return;
     }
-
-    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-    commandList->IASetIndexBuffer(&m_indexBufferView);
-    commandList->DrawIndexedInstanced(m_indexCount, 1, 0, 0, 0);
+    Bind(commandList);
+    DrawSubMesh(commandList, 0, m_indexCount);
 }
 
 } // namespace summer::gfx

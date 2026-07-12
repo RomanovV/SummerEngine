@@ -25,6 +25,11 @@ public:
     bool Initialize(Device& device, const summer::assets::MeshData& meshData);
     void Shutdown();
 
+    // Sets topology + vertex/index buffers. Call once before drawing one or more submeshes.
+    void Bind(ID3D12GraphicsCommandList* commandList) const;
+    // Draws a contiguous index range (a submesh). Requires Bind() first.
+    void DrawSubMesh(ID3D12GraphicsCommandList* commandList, uint32_t indexOffset, uint32_t indexCount) const;
+    // Convenience: binds and draws the whole mesh.
     void Draw(ID3D12GraphicsCommandList* commandList) const;
 
     uint32_t GetIndexCount() const { return m_indexCount; }

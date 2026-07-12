@@ -26,16 +26,6 @@ BasicPipeline::~BasicPipeline() {
 }
 
 void BasicPipeline::Shutdown() {
-    if (m_constantBufferMapped && m_constantBuffer) {
-        m_constantBuffer->Unmap(0, nullptr);
-        m_constantBufferMapped = nullptr;
-    }
-
-    if (m_constantBuffer) {
-        m_constantBuffer->Release();
-        m_constantBuffer = nullptr;
-    }
-
     if (m_pipelineState) {
         m_pipelineState->Release();
         m_pipelineState = nullptr;
@@ -67,7 +57,9 @@ bool BasicPipeline::LoadShaderBytecode(const char* path, std::vector<uint8_t>& o
 }
 
 bool BasicPipeline::CreateRootSignature(Device& device) {
-    // Param 0: CBV b0 (per-frame constants). Param 1: SRV table t0 (base color texture).
+    // Param 0: 32-bit root constants b0 (per-object MVP, 16 floats). Using root constants
+    // instead of a single mapped CBV lets us push distinct per-entity data within one frame
+    // without buffer aliasing. Param 1: SRV table t0 (base color texture).
     D3D12_DESCRIPTOR_RANGE1 srvRange{};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors = 1;
@@ -77,10 +69,11 @@ bool BasicPipeline::CreateRootSignature(Device& device) {
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     D3D12_ROOT_PARAMETER1 rootParameters[2]{};
-    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rootParameters[0].Descriptor.RegisterSpace = 0;
-    rootParameters[0].Descriptor.ShaderRegister = 0;
+    rootParameters[0].Constants.RegisterSpace = 0;
+    rootParameters[0].Constants.ShaderRegister = 0;
+    rootParameters[0].Constants.Num32BitValues = 16; // one float4x4
 
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -124,38 +117,6 @@ bool BasicPipeline::CreateRootSignature(Device& device) {
                 signature->GetBufferSize(),
                 IID_PPV_ARGS(&m_rootSignature)),
             "CreateRootSignature")) {
-        return false;
-    }
-
-    D3D12_HEAP_PROPERTIES uploadHeapProps{};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC constantBufferDesc{};
-    constantBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    constantBufferDesc.Width = sizeof(FrameConstants);
-    constantBufferDesc.Height = 1;
-    constantBufferDesc.DepthOrArraySize = 1;
-    constantBufferDesc.MipLevels = 1;
-    constantBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    constantBufferDesc.SampleDesc.Count = 1;
-    constantBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    if (!CheckHRESULT(
-            device.GetD3D12Device()->CreateCommittedResource(
-                &uploadHeapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &constantBufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&m_constantBuffer)),
-            "CreateCommittedResource constant buffer")) {
-        return false;
-    }
-
-    D3D12_RANGE readRange{0, 0};
-    if (!CheckHRESULT(
-            m_constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&m_constantBufferMapped)),
-            "Map constant buffer")) {
         return false;
     }
 
@@ -241,15 +202,10 @@ void BasicPipeline::Bind(ID3D12GraphicsCommandList* commandList) {
     commandList->SetGraphicsRootSignature(m_rootSignature);
 }
 
-void BasicPipeline::UpdateConstants(
+void BasicPipeline::SetModelViewProj(
     ID3D12GraphicsCommandList* commandList,
     const DirectX::XMFLOAT4X4& mvp) {
-    auto* constants = reinterpret_cast<FrameConstants*>(m_constantBufferMapped);
-    constants->mvp = mvp;
-
-    commandList->SetGraphicsRootConstantBufferView(
-        0,
-        m_constantBuffer->GetGPUVirtualAddress());
+    commandList->SetGraphicsRoot32BitConstants(0, 16, &mvp, 0);
 }
 
 void BasicPipeline::SetBaseColorTexture(

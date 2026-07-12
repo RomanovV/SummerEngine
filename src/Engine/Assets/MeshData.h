@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Assets/MaterialData.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,11 +24,13 @@ struct SubMesh {
     uint32_t materialIndex = 0;
 };
 
-// All geometry from a loaded file, flattened into single CPU buffers.
+// All geometry from a loaded file, flattened into single CPU buffers. SubMeshes keep their
+// material index so each can be drawn with its own material.
 struct MeshData {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<SubMesh> subMeshes;
+    std::vector<MaterialData> materials;
 
     std::string sourcePath;
     uint32_t vertexCount() const { return static_cast<uint32_t>(vertices.size()); }

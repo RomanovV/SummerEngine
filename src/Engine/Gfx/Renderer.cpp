@@ -1,13 +1,11 @@
 #include "Gfx/Renderer.h"
 #include "Assets/Image.h"
+#include "Assets/ModelLoader.h"
 #include "Core/Paths.h"
 #include "Gfx/Helpers.h"
 
 #include <DirectXMath.h>
 #include <spdlog/spdlog.h>
-
-#include <chrono>
-#include <cstring>
 
 namespace summer::gfx {
 
@@ -48,8 +46,7 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         return false;
     }
 
-    // Default base color: a checkerboard so the texturing path is always valid, even
-    // before any real texture is loaded.
+    // Default base color: a checkerboard so the texturing path is always valid.
     const summer::assets::Image checker = summer::assets::Image::MakeCheckerboard();
     if (!m_defaultTexture.CreateFromImage(m_device, m_srvHeap, checker, /*srgb=*/true)) {
         m_srvHeap.Shutdown();
@@ -57,9 +54,24 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         m_device.Shutdown();
         return false;
     }
-    m_material.baseColor = &m_defaultTexture;
+
+    const std::string vertexShaderPath = summer::Paths::Resolve(kVertexShaderRelative);
+    const std::string pixelShaderPath = summer::Paths::Resolve(kPixelShaderRelative);
+    if (!m_basicPipeline.Initialize(
+            m_device,
+            m_swapChain.GetFormat(),
+            m_swapChain.GetDepthFormat(),
+            vertexShaderPath.c_str(),
+            pixelShaderPath.c_str())) {
+        m_defaultTexture.Shutdown();
+        m_srvHeap.Shutdown();
+        m_swapChain.Shutdown();
+        m_device.Shutdown();
+        return false;
+    }
 
     if (!m_imguiLayer.Initialize(window, m_device, m_swapChain, m_srvHeap)) {
+        m_basicPipeline.Shutdown();
         m_defaultTexture.Shutdown();
         m_srvHeap.Shutdown();
         m_swapChain.Shutdown();
@@ -72,46 +84,39 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
     return true;
 }
 
-bool Renderer::LoadBaseColorTexture(const std::string& path, bool srgb) {
+Texture2D* Renderer::CreateTexture(const summer::assets::Image& image, bool srgb) {
     if (!m_initialized) {
-        return false;
+        return nullptr;
     }
-
-    m_baseColorTexture.Shutdown();
-    if (!m_baseColorTexture.CreateFromFile(m_device, m_srvHeap, path, srgb)) {
-        spdlog::warn("Falling back to default checkerboard for '{}'", path);
-        m_material.baseColor = &m_defaultTexture;
-        return false;
+    auto texture = std::make_unique<Texture2D>();
+    if (!texture->CreateFromImage(m_device, m_srvHeap, image, srgb)) {
+        return nullptr;
     }
-
-    m_material.baseColor = &m_baseColorTexture;
-    return true;
+    Texture2D* raw = texture.get();
+    m_textures.push_back(std::move(texture));
+    return raw;
 }
 
-bool Renderer::SetMesh(const summer::assets::MeshData& meshData) {
+Model* Renderer::CreateModel(const summer::assets::MeshData& meshData, Texture2D* fallbackBaseColor) {
     if (!m_initialized) {
-        return false;
+        return nullptr;
     }
-
-    if (!m_mesh.Initialize(m_device, meshData)) {
-        return false;
+    auto model = std::make_unique<Model>();
+    Texture2D* fallback = fallbackBaseColor ? fallbackBaseColor : &m_defaultTexture;
+    if (!model->Load(m_device, m_srvHeap, meshData, fallback)) {
+        return nullptr;
     }
+    Model* raw = model.get();
+    m_models.push_back(std::move(model));
+    return raw;
+}
 
-    const std::string vertexShaderPath = summer::Paths::Resolve(kVertexShaderRelative);
-    const std::string pixelShaderPath = summer::Paths::Resolve(kPixelShaderRelative);
-    if (!m_basicPipeline.Initialize(
-            m_device,
-            m_swapChain.GetFormat(),
-            m_swapChain.GetDepthFormat(),
-            vertexShaderPath.c_str(),
-            pixelShaderPath.c_str())) {
-        m_mesh.Shutdown();
-        return false;
+Model* Renderer::LoadModel(const std::string& path, Texture2D* fallbackBaseColor) {
+    summer::assets::MeshData meshData;
+    if (!summer::assets::ModelLoader::LoadFromFile(path, meshData)) {
+        return nullptr;
     }
-
-    m_hasMesh = true;
-    spdlog::info("Renderer mesh pipeline ready");
-    return true;
+    return CreateModel(meshData, fallbackBaseColor);
 }
 
 void Renderer::Shutdown() {
@@ -121,14 +126,11 @@ void Renderer::Shutdown() {
 
     m_device.WaitForGpu();
 
-    m_hasMesh = false;
-    m_mesh.Shutdown();
-    m_basicPipeline.Shutdown();
-
-    // Textures free their SRV slots, so release them (and ImGui) before the heap.
-    m_baseColorTexture.Shutdown();
+    // Models and textures free their SRV slots, so release them (and ImGui) before the heap.
+    m_models.clear();
+    m_textures.clear();
     m_defaultTexture.Shutdown();
-    m_material.baseColor = nullptr;
+    m_basicPipeline.Shutdown();
 
     m_imguiLayer.Shutdown();
     m_srvHeap.Shutdown();
@@ -163,29 +165,10 @@ void Renderer::BeginImGuiFrame() {
     m_imguiLayer.BeginFrame();
 }
 
-DirectX::XMFLOAT4X4 Renderer::BuildMvpMatrix() const {
-    using namespace DirectX;
-
-    static auto startTime = std::chrono::steady_clock::now();
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds =
-        std::chrono::duration<float>(now - startTime).count();
-
-    const float aspect = m_viewportHeight > 0
+float Renderer::Aspect() const {
+    return m_viewportHeight > 0
         ? static_cast<float>(m_viewportWidth) / static_cast<float>(m_viewportHeight)
         : 1.0f;
-
-    const XMMATRIX model = XMMatrixRotationY(elapsedSeconds * 0.8f);
-    const XMMATRIX view = XMMatrixLookAtLH(
-        XMVectorSet(3.0f, 2.5f, -4.0f, 0.0f),
-        XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f),
-        XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
-    const XMMATRIX projection = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspect, 0.1f, 100.0f);
-    const XMMATRIX mvp = XMMatrixMultiply(XMMatrixMultiply(model, view), projection);
-
-    XMFLOAT4X4 result;
-    XMStoreFloat4x4(&result, XMMatrixTranspose(mvp));
-    return result;
 }
 
 void Renderer::TransitionResource(
@@ -202,7 +185,7 @@ void Renderer::TransitionResource(
     m_device.GetCommandList()->ResourceBarrier(1, &barrier);
 }
 
-void Renderer::RenderFrame() {
+void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     if (!m_initialized) {
         return;
     }
@@ -219,12 +202,13 @@ void Renderer::RenderFrame() {
     if (!CheckHRESULT(frame.CommandAllocator->Reset(), "Reset command allocator")) {
         return;
     }
-
     if (!CheckHRESULT(
             m_device.GetCommandList()->Reset(frame.CommandAllocator, nullptr),
             "Reset command list")) {
         return;
     }
+
+    ID3D12GraphicsCommandList* commandList = m_device.GetCommandList();
 
     TransitionResource(
         backBuffer,
@@ -233,56 +217,57 @@ void Renderer::RenderFrame() {
 
     const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_swapChain.GetRTV(backBufferIndex);
     const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_swapChain.GetDSV();
-    m_device.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    m_device.GetCommandList()->ClearRenderTargetView(rtv, m_clearColor, 0, nullptr);
-    m_device.GetCommandList()->ClearDepthStencilView(
-        dsv,
-        D3D12_CLEAR_FLAG_DEPTH,
-        1.0f,
-        0,
-        0,
-        nullptr);
+    commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    commandList->ClearRenderTargetView(rtv, m_clearColor, 0, nullptr);
+    commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    if (m_hasMesh) {
-        const D3D12_VIEWPORT viewport{
-            0.0f,
-            0.0f,
-            static_cast<float>(m_viewportWidth),
-            static_cast<float>(m_viewportHeight),
-            0.0f,
-            1.0f};
-        const D3D12_RECT scissor{0, 0, static_cast<LONG>(m_viewportWidth), static_cast<LONG>(m_viewportHeight)};
+    const D3D12_VIEWPORT viewport{
+        0.0f, 0.0f,
+        static_cast<float>(m_viewportWidth),
+        static_cast<float>(m_viewportHeight),
+        0.0f, 1.0f};
+    const D3D12_RECT scissor{
+        0, 0, static_cast<LONG>(m_viewportWidth), static_cast<LONG>(m_viewportHeight)};
+    commandList->RSSetViewports(1, &viewport);
+    commandList->RSSetScissorRects(1, &scissor);
 
-        m_device.GetCommandList()->RSSetViewports(1, &viewport);
-        m_device.GetCommandList()->RSSetScissorRects(1, &scissor);
+    // Bind the shared shader-visible heap so material SRV tables resolve.
+    ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
+    commandList->SetDescriptorHeaps(1, heaps);
 
-        // Bind the shared shader-visible heap so the base color SRV table resolves.
-        ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
-        m_device.GetCommandList()->SetDescriptorHeaps(1, heaps);
+    m_basicPipeline.Bind(commandList);
 
-        m_basicPipeline.Bind(m_device.GetCommandList());
+    // view * proj is shared across entities; only the world (and thus MVP) changes per entity.
+    const DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(
+        scene.GetCamera().GetViewMatrix(),
+        scene.GetCamera().GetProjectionMatrix(Aspect()));
 
-        const DirectX::XMFLOAT4X4 mvp = BuildMvpMatrix();
-        m_basicPipeline.UpdateConstants(m_device.GetCommandList(), mvp);
+    for (const summer::scene::Entity& entity : scene.GetEntities()) {
+        if (!entity.model) {
+            continue;
+        }
+        const DirectX::XMMATRIX world = DirectX::XMLoadFloat4x4(&entity.transform);
+        const DirectX::XMMATRIX mvp = DirectX::XMMatrixMultiply(world, viewProj);
 
-        const Texture2D* baseColor = m_material.baseColor ? m_material.baseColor : &m_defaultTexture;
-        m_basicPipeline.SetBaseColorTexture(m_device.GetCommandList(), baseColor->GetSrvGpu());
+        DirectX::XMFLOAT4X4 mvpTransposed;
+        DirectX::XMStoreFloat4x4(&mvpTransposed, DirectX::XMMatrixTranspose(mvp));
 
-        m_mesh.Draw(m_device.GetCommandList());
+        m_basicPipeline.SetModelViewProj(commandList, mvpTransposed);
+        entity.model->Draw(commandList, m_basicPipeline);
     }
 
-    m_imguiLayer.RenderDrawData(m_device.GetCommandList());
+    m_imguiLayer.RenderDrawData(commandList);
 
     TransitionResource(
         backBuffer,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_PRESENT);
 
-    if (!CheckHRESULT(m_device.GetCommandList()->Close(), "Close command list")) {
+    if (!CheckHRESULT(commandList->Close(), "Close command list")) {
         return;
     }
 
-    ID3D12CommandList* commandLists[] = {m_device.GetCommandList()};
+    ID3D12CommandList* commandLists[] = {commandList};
     m_device.GetCommandQueue()->ExecuteCommandLists(1, commandLists);
 
     m_swapChain.Present();

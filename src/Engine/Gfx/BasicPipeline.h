@@ -9,11 +9,6 @@ namespace summer::gfx {
 
 class Device;
 
-// Per-frame constants for the basic mesh shader. Must remain 256-byte aligned for CBV rules.
-struct alignas(256) FrameConstants {
-    DirectX::XMFLOAT4X4 mvp;
-};
-
 // Loads compiled DXIL (.cso), builds root signature + PSO for the basic mesh pass.
 class BasicPipeline {
 public:
@@ -32,7 +27,9 @@ public:
     void Shutdown();
 
     void Bind(ID3D12GraphicsCommandList* commandList);
-    void UpdateConstants(
+
+    // Pushes the per-object model-view-projection matrix as root constants (b0).
+    void SetModelViewProj(
         ID3D12GraphicsCommandList* commandList,
         const DirectX::XMFLOAT4X4& mvp);
 
@@ -55,10 +52,6 @@ private:
 
     ID3D12RootSignature* m_rootSignature = nullptr;
     ID3D12PipelineState* m_pipelineState = nullptr;
-
-    // Persistently-mapped upload buffer for per-frame constant updates.
-    ID3D12Resource* m_constantBuffer = nullptr;
-    uint8_t* m_constantBufferMapped = nullptr;
 };
 
 } // namespace summer::gfx

@@ -1,13 +1,72 @@
 #include "Assets/ModelLoader.h"
 
 #include <assimp/Importer.hpp>
+#include <assimp/material.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+
 namespace summer::assets {
 
 namespace {
+
+// Returns the directory portion of a path (with trailing separator), or empty.
+std::string DirectoryOf(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) {
+        return {};
+    }
+    return path.substr(0, slash + 1);
+}
+
+std::string ResolveTexturePath(const std::string& baseDir, const aiString& texPath) {
+    std::string relative = texPath.C_Str();
+    if (relative.empty()) {
+        return {};
+    }
+    // Embedded textures are referenced as "*0"; we don't support those here yet.
+    if (relative[0] == '*') {
+        return {};
+    }
+    std::replace(relative.begin(), relative.end(), '\\', '/');
+    // Absolute paths (drive letter or leading slash) are used as-is.
+    const bool isAbsolute =
+        (relative.size() > 1 && relative[1] == ':') || relative[0] == '/';
+    return isAbsolute ? relative : baseDir + relative;
+}
+
+void ImportMaterials(const aiScene* scene, const std::string& baseDir, MeshData& outMesh) {
+    outMesh.materials.reserve(scene->mNumMaterials);
+    for (uint32_t materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
+        const aiMaterial* material = scene->mMaterials[materialIndex];
+        MaterialData data;
+
+        aiString name;
+        if (material->Get(AI_MATKEY_NAME, name) == AI_SUCCESS) {
+            data.name = name.C_Str();
+        }
+
+        aiColor4D baseColor;
+        if (material->Get(AI_MATKEY_BASE_COLOR, baseColor) == AI_SUCCESS ||
+            material->Get(AI_MATKEY_COLOR_DIFFUSE, baseColor) == AI_SUCCESS) {
+            data.baseColorFactor[0] = baseColor.r;
+            data.baseColorFactor[1] = baseColor.g;
+            data.baseColorFactor[2] = baseColor.b;
+            data.baseColorFactor[3] = baseColor.a;
+        }
+
+        // Prefer the PBR base color texture, fall back to the legacy diffuse slot.
+        aiString texPath;
+        if (material->GetTexture(aiTextureType_BASE_COLOR, 0, &texPath) == AI_SUCCESS ||
+            material->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
+            data.baseColorTexturePath = ResolveTexturePath(baseDir, texPath);
+        }
+
+        outMesh.materials.push_back(std::move(data));
+    }
+}
 
 struct AccumulatedMesh {
     std::vector<Vertex> vertices;
@@ -149,12 +208,15 @@ bool ModelLoader::LoadFromFile(
     outMesh.subMeshes = std::move(accumulated.subMeshes);
     outMesh.sourcePath = path;
 
+    ImportMaterials(scene, DirectoryOf(path), outMesh);
+
     spdlog::info(
-        "Loaded mesh '{}' — {} vertices, {} indices, {} submesh(es)",
+        "Loaded mesh '{}' — {} vertices, {} indices, {} submesh(es), {} material(s)",
         path,
         outMesh.vertexCount(),
         outMesh.indexCount(),
-        outMesh.subMeshes.size());
+        outMesh.subMeshes.size(),
+        outMesh.materials.size());
 
     for (const SubMesh& subMesh : outMesh.subMeshes) {
         spdlog::info(
