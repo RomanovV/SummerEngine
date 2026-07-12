@@ -10,8 +10,8 @@ namespace summer {
 
 struct WindowConfig {
     std::string title = "Summer Sandbox";
-    int width = 1280;
-    int height = 720;
+    int width = 1920;
+    int height = 1080;
     bool resizable = true;
 };
 

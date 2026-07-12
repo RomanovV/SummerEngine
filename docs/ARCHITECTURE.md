@@ -1,7 +1,8 @@
 # SummerEngine Architecture
 
 > Sandbox rendering engine for learning and experimenting with D3D12, shaders, and rendering techniques.
-> This document reflects the codebase as of **Phase 1** (multi-mesh models, materials, minimal scene + orbit camera).
+> This document reflects the codebase as of **Phase 2** (forward PBR: metallic-roughness + normal mapping,
+> analytic lights, HDR target + tonemap).
 
 ---
 
@@ -29,8 +30,8 @@ SummerEngine/
 │   │   ├── Gfx/            # Device, SwapChain, Renderer, pipelines, textures, models
 │   │   └── Scene/          # Camera, Scene (entity list)
 │   └── Sandbox/            # main.cpp
-├── shaders/                # HLSL (BasicVS/BasicPS) → compiled to .cso
-├── assets/models/          # Meshes via Assimp (e.g. cube.obj)
+├── shaders/                # HLSL (PbrVS/PbrPS, FullscreenVS/TonemapPS) → compiled to .cso
+├── assets/models/          # Meshes via Assimp (cube.obj, FlightHelmet glTF)
 └── vendor/                 # GLFW, ImGui, spdlog, stb, Assimp, renderdoc (+ premake)
 ```
 
@@ -71,8 +72,12 @@ graph TB
             Model["Model<br/>(mesh+materials)"]
             GpuMesh["GpuMesh<br/>(GPU buffers)"]
             Texture2D["Texture2D<br/>(SRV textures)"]
-            Material["Material"]
-            BasicPipeline["BasicPipeline<br/>(PSO + shaders)"]
+            Material["Material<br/>(PBR slots + factors)"]
+            PbrPipeline["PbrPipeline<br/>(PSO + PBR shaders)"]
+            TonemapPipeline["TonemapPipeline<br/>(fullscreen resolve)"]
+            ColorTarget["ColorTarget<br/>(HDR RT + SRV)"]
+            ConstantBuffer["ConstantBuffer<br/>(per-frame CB)"]
+            Lighting["Lighting<br/>(FrameConstants)"]
             Buffer["Buffer<br/>(upload helper)"]
             GpuCapture["GpuCapture<br/>(PIX/RenderDoc)"]
         end
@@ -100,11 +105,17 @@ graph TB
     Renderer --> SwapChain
     Renderer --> ImGuiLayer
     Renderer --> SrvHeap
-    Renderer --> BasicPipeline
+    Renderer --> PbrPipeline
+    Renderer --> TonemapPipeline
+    Renderer --> ColorTarget
+    Renderer --> ConstantBuffer
     Renderer --> Model
     Renderer --> Texture2D
     Renderer --> ModelLoader
 
+    PbrPipeline --> Lighting
+    ConstantBuffer --> Lighting
+    ColorTarget --> SrvHeap
     Model --> GpuMesh
     Model --> Material
     Model --> Texture2D
@@ -132,7 +143,7 @@ graph TB
 | Namespace | Modules | Purpose |
 |---|---|---|
 | `summer::` | `Log`, `Paths`, `Window` | Platform-agnostic engine utilities |
-| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `BasicPipeline`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` | All D3D12 rendering code |
+| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `PbrPipeline`, `TonemapPipeline`, `ColorTarget`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`) | All D3D12 rendering code |
 | `summer::assets::` | `MeshData`, `MaterialData`, `ModelLoader`, `Image`, `Primitives` | CPU-side geometry / materials / images |
 | `summer::scene::` | `Scene`, `Entity`, `Camera` | Minimal scene graph (draw list + camera) |
 
@@ -150,8 +161,11 @@ Startup sequence in `Sandbox/main.cpp`:
    ├── Device::Initialize()          → DXGI factory, D3D12 device, queue, fence
    ├── SwapChain::Initialize()       → swap chain bound to HWND, RTV heap, depth + DSV
    ├── GpuDescriptorHeap::Initialize()→ shared shader-visible CBV/SRV/UAV heap
-   ├── Texture2D (default checker)    → placeholder base color
-   ├── BasicPipeline::Initialize()   → root signature + PSO from compiled .cso
+   ├── ColorTarget::Initialize()     → HDR target (R16G16B16A16_FLOAT) + private RTV + shared SRV
+   ├── Default PBR textures          → white / flat-normal / ORM / black (procedural fallbacks)
+   ├── ConstantBuffer::Initialize()  → per-frame CB (FrameConstants × FrameCount)
+   ├── PbrPipeline::Initialize()     → PBR root signature + PSO (HDR RTV format)
+   ├── TonemapPipeline::Initialize() → fullscreen resolve root sig + PSO (swapchain format)
    └── ImGuiLayer::Initialize()      → ImGui context, GLFW+DX12 backends (borrows the shared heap)
 5. GpuCapture::SetActiveWindow()     → associates RenderDoc overlay with device + window
 6. Create textures / models          → Renderer::CreateTexture / CreateModel / LoadModel
@@ -194,31 +208,41 @@ sequenceDiagram
         Rnd->>SC: GetCurrentBackBufferIndex()
         Rnd->>Dev: WaitForBackBuffer(index)
         Rnd->>Dev: Reset allocator + command list
-        Rnd->>Rnd: Transition PRESENT → RENDER_TARGET
-        Rnd->>Rnd: Clear RTV + depth, set viewport/scissor
-        Rnd->>Rnd: SetDescriptorHeaps(shared SRV heap)
-        Rnd->>Rnd: Bind BasicPipeline
-        Rnd->>Cam: view * proj (once)
+        Rnd->>Rnd: Update per-frame CB (viewProj, camera, lights)
+        Rnd->>Rnd: SetDescriptorHeaps(shared SRV heap), set viewport/scissor
+        Note over Rnd: Pass 1 — PBR into HDR
+        Rnd->>Rnd: HDR: PIXEL_SHADER_RESOURCE → RENDER_TARGET, clear HDR + depth
+        Rnd->>Rnd: Bind PbrPipeline, SetFrameConstants(b1)
         loop For each Entity
-            Rnd->>Rnd: MVP = world * viewProj → root 32-bit constants
+            Rnd->>Rnd: model + normalMatrix → root constants (b0)
             loop For each SubMesh
-                Rnd->>Rnd: SetBaseColorTexture (SRV table)
+                Rnd->>Rnd: SetMaterial (factors b2 + 5 SRV tables)
                 Rnd->>GpuMesh: DrawSubMesh(offset, count)
             end
         end
+        Rnd->>Rnd: HDR: RENDER_TARGET → PIXEL_SHADER_RESOURCE
+        Note over Rnd: Pass 2 — tonemap + UI
+        Rnd->>Rnd: Backbuffer: PRESENT → RENDER_TARGET
+        Rnd->>Rnd: TonemapPipeline.Draw (HDR SRV, exposure, operator)
         Rnd->>UI: RenderDrawData (ImGui on top)
-        Rnd->>Rnd: Transition RENDER_TARGET → PRESENT
+        Rnd->>Rnd: Backbuffer: RENDER_TARGET → PRESENT
         Rnd->>Dev: ExecuteCommandLists + Present + SignalBackBuffer
     end
 ```
 
-### Per-object constants (why root constants)
+### Constants: root constants vs. per-frame CB
 
-A single mapped constant buffer can't hold distinct per-entity data within one frame — every draw
-would observe the last value written, since the GPU executes the command list later. So the per-object
-MVP is pushed as **32-bit root constants** (16 floats at `b0`). This keeps multi-entity rendering
-correct with no ring buffer. As per-object data grows (normal matrix, material params), this migrates
-to a proper per-object constant ring / structured buffer.
+- **Per-object** (`b0`): `model` + `normalMatrix` are pushed as **32-bit root constants** (32 DWORDs).
+  A single mapped CB can't hold distinct per-entity data within one frame — every draw would observe
+  the last value written, since the GPU executes the command list later. Root constants keep
+  multi-entity rendering correct with no ring buffer.
+- **Per-material** (`b2`): base color / emissive factors, metallic, roughness, normal scale and
+  occlusion strength ride as root constants too (cheap, no aliasing).
+- **Per-frame** (`b1`): camera + lights change once per frame, so they live in a real mapped
+  `ConstantBuffer` with one 256-byte-aligned slot per frame-in-flight (`FrameCount`), bound as a CBV.
+
+The `normalMatrix` is uploaded as `inverse(world)`; HLSL's column-major interpretation of the
+row-major upload yields `transpose(inverse(world))`, the correct normal transform under non-uniform scale.
 
 ### Where to hook your experiments
 
@@ -245,15 +269,17 @@ graph LR
     Model --> GpuMesh["GpuMesh"]
     Model --> Mats["Material[]"]
     Model --> Texs["owned Texture2D[]"]
-    Mats --> BaseColor["baseColor Texture2D* + factor"]
+    Mats --> Slots["baseColor / normal / metalRough / occlusion / emissive<br/>+ factors"]
 ```
 
 - **`Scene`** is intentionally minimal: a `Camera` plus a flat `std::vector<Entity>`. No hierarchy or
   serialization yet — a draw list is all you need to study rendering.
 - **`Entity`** references a borrowed `Model*` (owned by the `Renderer`) plus a row-major world matrix.
 - **`Model`** owns one `GpuMesh` (which may contain several submeshes), its imported `Texture2D`s, and
-  a resolved `Material` per imported material. `Model::Draw` binds the mesh once and draws each submesh
-  with its material's base color (falling back to a borrowed default checkerboard).
+  a resolved `Material` per imported material. Each `Material` carries the five PBR texture slots
+  (base color / normal / metalRough / occlusion / emissive) plus scalar factors; missing slots fall
+  back to **Renderer-owned procedural defaults** (white / flat normal / ORM / black) so every binding
+  is always valid. `Model::Draw` binds the mesh once and draws each submesh with its material.
 - **`Camera`** is an orbit camera (yaw / pitch / distance around a target) producing left-handed
   view + perspective matrices. Controlled from `main.cpp`: LMB orbit, MMB/RMB pan, scroll zoom, WASD/QE.
 
@@ -285,13 +311,17 @@ graph LR
     Renderer --> Device
     Renderer --> SwapChain
     Renderer --> SrvHeap["GpuDescriptorHeap<br/>(shared, shader-visible)"]
-    Renderer --> Pipeline["BasicPipeline<br/>(root sig + PSO)"]
+    Renderer --> Pbr["PbrPipeline<br/>(root sig + PSO)"]
+    Renderer --> Tonemap["TonemapPipeline<br/>(root sig + PSO)"]
+    Renderer --> HDR["ColorTarget (HDR)<br/>private RTV heap + shared SRV"]
+    Renderer --> FrameCB["ConstantBuffer<br/>(per-frame CBV)"]
     Renderer --> Models["Model[] (owns GpuMesh + Texture2D)"]
-    Renderer --> DefaultTex["default Texture2D"]
+    Renderer --> DefaultTex["default PBR Texture2D ×5"]
 
     ImGuiLayer["ImGuiLayer"] -.borrows.-> SrvHeap
     Models -.allocate SRVs from.-> SrvHeap
     DefaultTex -.allocate SRV from.-> SrvHeap
+    HDR -.allocate SRV from.-> SrvHeap
 ```
 
 ### Key constants
@@ -300,13 +330,23 @@ graph LR
 - **`kSrvHeapCapacity = 1024`** — shared shader-visible CBV/SRV/UAV heap (ImGui font + engine textures).
   Defined in `Renderer.cpp`; grow as content grows.
 
-### BasicPipeline root signature
+### PbrPipeline root signature
 
 | Slot | Binding | Purpose |
 |---|---|---|
-| Root param 0 | 32-bit constants `b0` (16 floats) | Per-object MVP |
-| Root param 1 | Descriptor table, SRV `t0` | Base color texture |
-| Static sampler | `s0` (trilinear, wrap) | No separate sampler heap needed |
+| Root param 0 | 32-bit constants `b0` (32 DWORDs) | Per-object `model` + `normalMatrix` |
+| Root param 1 | CBV `b1` | Per-frame `FrameConstants` (camera + lights) |
+| Root param 2 | 32-bit constants `b2` (12 DWORDs) | Per-material factors |
+| Root params 3–7 | SRV tables `t0`–`t4` | baseColor, normal, metalRough, occlusion, emissive |
+| Static sampler | `s0` (anisotropic, wrap) | No separate sampler heap needed |
+
+### TonemapPipeline root signature
+
+| Slot | Binding | Purpose |
+|---|---|---|
+| Root param 0 | Descriptor table, SRV `t0` | HDR scene target |
+| Root param 1 | 32-bit constants `b0` | Exposure + tonemap operator |
+| Static sampler | `s0` (linear, clamp) | Fullscreen sampling |
 
 ---
 
@@ -325,17 +365,42 @@ expensive, but required before destroying/resizing GPU resources or freeing uplo
 
 ## Descriptor Heaps
 
-D3D12 uses descriptor heaps instead of bind slots. SummerEngine currently has three:
+D3D12 uses descriptor heaps instead of bind slots. SummerEngine currently has these:
 
 | Heap | Type | Owner | Shader-visible? | Purpose |
 |---|---|---|---|---|
 | RTV heap | `..._RTV` | `SwapChain` | No | Back buffer render target views |
 | DSV heap | `..._DSV` | `SwapChain` | No | Depth-stencil for the 3D pass |
-| SRV heap | `..._CBV_SRV_UAV` | `Renderer` (`GpuDescriptorHeap`) | **Yes** | ImGui font atlas + all engine textures |
+| HDR RTV heap | `..._RTV` (1) | `ColorTarget` | No | Render target view for the HDR scene target |
+| SRV heap | `..._CBV_SRV_UAV` | `Renderer` (`GpuDescriptorHeap`) | **Yes** | ImGui font atlas + all engine textures + HDR SRV |
 
-> **Important:** Only one shader-visible CBV/SRV/UAV heap can be bound per command list. ImGui and all
-> engine `Texture2D`s therefore **share** the single `GpuDescriptorHeap`, which uses a free-list
-> allocator. ImGui 1.92+ requires app-provided alloc/free callbacks, which route into the same heap.
+> **Important:** Only one shader-visible CBV/SRV/UAV heap can be bound per command list. ImGui, all
+> engine `Texture2D`s, and the HDR target's SRV therefore **share** the single `GpuDescriptorHeap`,
+> which uses a free-list allocator. ImGui 1.92+ requires app-provided alloc/free callbacks, which route
+> into the same heap.
+
+---
+
+## HDR Rendering & Tonemap
+
+The PBR pass renders **linear HDR radiance** into an offscreen `ColorTarget` (`R16G16B16A16_FLOAT`),
+not directly to the swapchain. A fullscreen `TonemapPipeline` pass then resolves it to the (UNORM)
+backbuffer:
+
+```mermaid
+flowchart LR
+    A["HDR → RENDER_TARGET<br/>clear HDR + depth"] --> B["PBR pass<br/>scene → HDR (float16)"]
+    B --> C["HDR → PIXEL_SHADER_RESOURCE"]
+    C --> D["Backbuffer → RENDER_TARGET"]
+    D --> E["Tonemap: HDR → backbuffer<br/>exposure → ACES/Reinhard → gamma"]
+    E --> F["ImGui on backbuffer"]
+    F --> G["Backbuffer → PRESENT"]
+```
+
+- `FullscreenVS` emits a single oversized triangle from `SV_VertexID` (no vertex buffer).
+- `TonemapPS` applies exposure, a tonemap operator (Reinhard or ACES), then **manual gamma encode**
+  (the backbuffer is `_UNORM`, not `_SRGB`), all driven by root constants from the sandbox UI.
+- This HDR + fullscreen-resolve infrastructure is reused as the deferred lighting resolve in Phase 3.
 
 ---
 
@@ -351,18 +416,27 @@ flowchart LR
     Model --> GPU["GpuMesh upload + Texture2D per material"]
 ```
 
-`ModelLoader` walks the scene graph, applies node transforms, and merges meshes into flat CPU arrays
-while preserving **submeshes** (each with its `materialIndex`). It also imports **materials**: base
-color factor (`AI_MATKEY_BASE_COLOR` → diffuse fallback) and base color texture (`BASE_COLOR` →
-`DIFFUSE`), resolving texture paths relative to the model file.
+`ModelLoader` walks the scene graph, applies node transforms (to positions **and** normals/tangents),
+and merges meshes into flat CPU arrays while preserving **submeshes** (each with its `materialIndex`).
+`aiProcess_CalcTangentSpace` generates tangents; handedness (`tangent.w`) is derived from the
+normal/tangent/bitangent frame so the shader can reconstruct the bitangent. It imports the full
+metallic-roughness **material** set: base color, tangent-space normal, packed metalRough (glTF exposes
+this as `METALNESS`/`DIFFUSE_ROUGHNESS`/`UNKNOWN`), occlusion (often the same ORM file), and emissive
+textures, plus base-color/emissive/metallic/roughness factors — resolving texture paths relative to
+the model file.
 
 `Renderer::CreateModel` uploads geometry via `GpuMesh` and loads each unique material texture via
-`Texture2D` (deduplicated by path), falling back to a borrowed default texture where none exists.
-Procedural geometry (e.g. `Primitives::MakePlane`) produces the same `MeshData` and goes through the
-same path.
+`Texture2D` (deduplicated by path + colorspace), with **color textures sampled sRGB** (base color,
+emissive) and **data textures linear** (normal, metalRough, occlusion). Missing slots fall back to
+procedural defaults. Procedural geometry (e.g. `Primitives::MakePlane`, which sets its own tangents)
+produces the same `MeshData` and goes through the same path.
 
-Shaders (`shaders/BasicVS.hlsl`, `shaders/BasicPS.hlsl`) are yours to experiment with; the C++ side
-loads compiled `.cso` bytecode (with embedded PDBs for PIX/RenderDoc shader debugging).
+The **FlightHelmet** Khronos sample (`assets/models/FlightHelmet/glTF/`) exercises multi-material
+textured PBR (6 submeshes / 5 textured materials + ORM maps).
+
+Shaders (`shaders/PbrVS.hlsl`, `shaders/PbrPS.hlsl`, `shaders/FullscreenVS.hlsl`,
+`shaders/TonemapPS.hlsl`) are yours to experiment with; the C++ side loads compiled `.cso` bytecode
+(with embedded PDBs for PIX/RenderDoc shader debugging).
 
 ---
 
@@ -419,6 +493,7 @@ msbuild build\SummerEngine.sln /p:Configuration=Debug /p:Platform=x64
 | spdlog | `vendor/spdlog` | Logging (header-only) |
 | stb | `vendor/stb` | Image loading (`stb_image`) |
 | Assimp 6.x | `vendor/assimp` | Mesh + material import (OBJ, FBX, glTF, …) |
+| Khronos FlightHelmet | `assets/models/FlightHelmet/` (CC0) | glTF PBR sample asset |
 | RenderDoc API | `vendor/renderdoc` | In-application capture header |
 
 ---
@@ -438,10 +513,13 @@ Per-submesh draw ranges, `Model` (owns mesh + resolved materials/textures), mate
 from Assimp, a flat `Scene` (entity list) + orbit `Camera`, per-object MVP via root constants, and a
 procedural textured plane + loaded cubes in the sandbox.
 
-### ⬜ Phase 2 — PBR (forward)
-Cook–Torrance metallic-roughness, tangent-space normal mapping (Assimp can generate tangents), one
-directional + a few point lights. Validate here where debugging is easy.
-- *Optional sub-step:* IBL — cubemap load + irradiance / prefilter / BRDF-LUT. Can be deferred.
+### ✅ Phase 2 — PBR (forward) *(done)*
+Cook–Torrance metallic-roughness + tangent-space normal mapping, one directional + up to 4 point
+lights via a per-frame CB, an HDR target (`R16G16B16A16_FLOAT`) with a fullscreen tonemap pass
+(exposure + Reinhard/ACES + gamma), procedural default PBR maps, and the Khronos **FlightHelmet** glTF
+sample loaded alongside procedural geometry. UI exposes lights, exposure, tonemap operator, and
+per-material metallic/roughness.
+- *Optional sub-step (not done):* IBL — cubemap load + irradiance / prefilter / BRDF-LUT. Deferred.
 
 ### ⬜ Phase 3 — Deferred rendering
 G-buffer (albedo / normal / metallic-roughness / depth) + a fullscreen lighting pass that **reuses the
@@ -504,7 +582,11 @@ Ordering rationale:
 | `Gfx/SwapChain.cpp` | You need to change presentation or the depth/stencil target |
 | `Gfx/GpuDescriptorHeap.cpp` | You allocate SRVs/CBVs/UAVs from the shared shader-visible heap |
 | `Gfx/ImGuiLayer.cpp` | You need to debug UI rendering or the shared-heap callbacks |
-| `Gfx/BasicPipeline.cpp` | You change the root signature, PSO, or per-object constants |
+| `Gfx/PbrPipeline.cpp` | You change the PBR root signature, PSO, or per-object/material constants |
+| `Gfx/TonemapPipeline.cpp` | You change the tonemap/fullscreen resolve pass |
+| `Gfx/ColorTarget.cpp` | You change the HDR render target / its RTV+SRV |
+| `Gfx/ConstantBuffer.cpp` | You change the per-frame CB (double-buffered upload) |
+| `Gfx/Lighting.h` | You change `FrameConstants` / light structs (keep in sync with `PbrPS.hlsl`) |
 | `Gfx/GpuMesh.cpp` | You change buffer upload or per-submesh draw setup |
 | `Gfx/Model.cpp` | You change how a model resolves materials/textures or draws |
 | `Gfx/Texture2D.cpp` | You change GPU texture creation / mip upload / SRV setup |
@@ -514,7 +596,8 @@ Ordering rationale:
 | `Assets/Primitives.cpp` | You add procedural geometry |
 | `Scene/Camera.cpp` | You change camera behavior or projection |
 | `Scene/Scene.h` | You change the entity/draw-list model |
-| `shaders/BasicVS.hlsl` | Vertex shader experiments |
-| `shaders/BasicPS.hlsl` | Pixel shader / lighting experiments |
+| `shaders/PbrVS.hlsl` | Vertex shader experiments (world pos + TBN + uv) |
+| `shaders/PbrPS.hlsl` | PBR / lighting experiments (Cook–Torrance + normal mapping) |
+| `shaders/TonemapPS.hlsl` | Tonemap / exposure / gamma experiments |
 | `premake5.lua` | You add source files, libs, or build steps |
 ```

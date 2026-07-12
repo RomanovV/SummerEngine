@@ -65,6 +65,22 @@ Image Image::MakeCheckerboard(uint32_t size, uint32_t checks, uint32_t colorA, u
     return image;
 }
 
+Image Image::MakeSolid(uint32_t rgba, uint32_t size) {
+    Image image;
+    image.width = std::max<uint32_t>(1, size);
+    image.height = image.width;
+    image.pixels.resize(static_cast<size_t>(image.width) * image.height * kChannels);
+
+    for (size_t i = 0; i < image.pixels.size(); i += kChannels) {
+        image.pixels[i + 0] = static_cast<uint8_t>(rgba & 0xFF);
+        image.pixels[i + 1] = static_cast<uint8_t>((rgba >> 8) & 0xFF);
+        image.pixels[i + 2] = static_cast<uint8_t>((rgba >> 16) & 0xFF);
+        image.pixels[i + 3] = static_cast<uint8_t>((rgba >> 24) & 0xFF);
+    }
+
+    return image;
+}
+
 std::vector<Image> Image::GenerateMipChain(const Image& base) {
     std::vector<Image> mips;
     if (!base.IsValid()) {

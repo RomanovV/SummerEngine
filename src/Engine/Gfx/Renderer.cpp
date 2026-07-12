@@ -10,17 +10,41 @@
 namespace summer::gfx {
 
 namespace {
-// Compiled shaders are staged next to the executable (see scripts/stage_assets.ps1),
-// so they resolve identically whether run from the IDE or launched standalone by PIX/RenderDoc.
-constexpr const char* kVertexShaderRelative = "shaders/BasicVS.cso";
-constexpr const char* kPixelShaderRelative = "shaders/BasicPS.cso";
+// Compiled shaders are staged next to the executable (see scripts/stage_assets.ps1).
+constexpr const char* kPbrVsRelative = "shaders/PbrVS.cso";
+constexpr const char* kPbrPsRelative = "shaders/PbrPS.cso";
+constexpr const char* kFullscreenVsRelative = "shaders/FullscreenVS.cso";
+constexpr const char* kTonemapPsRelative = "shaders/TonemapPS.cso";
 
-// Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures. Grow as content grows.
+// Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures + HDR SRV. Grow as content grows.
 constexpr uint32_t kSrvHeapCapacity = 1024;
 } // namespace
 
 Renderer::~Renderer() {
     Shutdown();
+}
+
+bool Renderer::CreateDefaultTextures() {
+    // Packed 0xAABBGGRR. Defaults are chosen to be neutral so unbound slots don't alter shading.
+    const summer::assets::Image white = summer::assets::Image::MakeSolid(0xFFFFFFFFu);
+    const summer::assets::Image flatNormal = summer::assets::Image::MakeSolid(0xFFFF8080u); // (128,128,255)
+    const summer::assets::Image orm = summer::assets::Image::MakeSolid(0xFF00FFFFu);         // occ=1, rough=1, metal=0
+    const summer::assets::Image black = summer::assets::Image::MakeSolid(0xFF000000u);
+
+    if (!m_defaultBaseColor.CreateFromImage(m_device, m_srvHeap, white, /*srgb=*/true, /*mips=*/false) ||
+        !m_defaultNormal.CreateFromImage(m_device, m_srvHeap, flatNormal, /*srgb=*/false, false) ||
+        !m_defaultMetalRough.CreateFromImage(m_device, m_srvHeap, orm, /*srgb=*/false, false) ||
+        !m_defaultOcclusion.CreateFromImage(m_device, m_srvHeap, white, /*srgb=*/false, false) ||
+        !m_defaultEmissive.CreateFromImage(m_device, m_srvHeap, black, /*srgb=*/true, false)) {
+        return false;
+    }
+
+    m_materialDefaults.baseColor = &m_defaultBaseColor;
+    m_materialDefaults.normal = &m_defaultNormal;
+    m_materialDefaults.metalRough = &m_defaultMetalRough;
+    m_materialDefaults.occlusion = &m_defaultOcclusion;
+    m_materialDefaults.emissive = &m_defaultEmissive;
+    return true;
 }
 
 bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
@@ -31,11 +55,7 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
     m_viewportWidth = static_cast<uint32_t>(window.GetWidth());
     m_viewportHeight = static_cast<uint32_t>(window.GetHeight());
 
-    if (!m_swapChain.Initialize(
-            m_device,
-            window.GetNativeHandle(),
-            m_viewportWidth,
-            m_viewportHeight)) {
+    if (!m_swapChain.Initialize(m_device, window.GetNativeHandle(), m_viewportWidth, m_viewportHeight)) {
         m_device.Shutdown();
         return false;
     }
@@ -46,41 +66,41 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         return false;
     }
 
-    // Default base color: a checkerboard so the texturing path is always valid.
-    const summer::assets::Image checker = summer::assets::Image::MakeCheckerboard();
-    if (!m_defaultTexture.CreateFromImage(m_device, m_srvHeap, checker, /*srgb=*/true)) {
-        m_srvHeap.Shutdown();
-        m_swapChain.Shutdown();
-        m_device.Shutdown();
+    if (!m_hdrTarget.Initialize(m_device, m_srvHeap, m_viewportWidth, m_viewportHeight) ||
+        !CreateDefaultTextures() ||
+        !m_frameCb.Initialize(m_device, sizeof(FrameConstants), FrameCount)) {
+        Shutdown();
         return false;
     }
 
-    const std::string vertexShaderPath = summer::Paths::Resolve(kVertexShaderRelative);
-    const std::string pixelShaderPath = summer::Paths::Resolve(kPixelShaderRelative);
-    if (!m_basicPipeline.Initialize(
-            m_device,
-            m_swapChain.GetFormat(),
-            m_swapChain.GetDepthFormat(),
-            vertexShaderPath.c_str(),
-            pixelShaderPath.c_str())) {
-        m_defaultTexture.Shutdown();
-        m_srvHeap.Shutdown();
-        m_swapChain.Shutdown();
-        m_device.Shutdown();
+    const std::string pbrVs = summer::Paths::Resolve(kPbrVsRelative);
+    const std::string pbrPs = summer::Paths::Resolve(kPbrPsRelative);
+    if (!m_pbrPipeline.Initialize(
+            m_device, m_hdrTarget.Format(), m_swapChain.GetDepthFormat(), pbrVs.c_str(), pbrPs.c_str())) {
+        Shutdown();
+        return false;
+    }
+
+    const std::string fsVs = summer::Paths::Resolve(kFullscreenVsRelative);
+    const std::string tmPs = summer::Paths::Resolve(kTonemapPsRelative);
+    if (!m_tonemapPipeline.Initialize(
+            m_device, m_swapChain.GetFormat(), fsVs.c_str(), tmPs.c_str())) {
+        Shutdown();
         return false;
     }
 
     if (!m_imguiLayer.Initialize(window, m_device, m_swapChain, m_srvHeap)) {
-        m_basicPipeline.Shutdown();
-        m_defaultTexture.Shutdown();
-        m_srvHeap.Shutdown();
-        m_swapChain.Shutdown();
-        m_device.Shutdown();
+        Shutdown();
         return false;
     }
 
+    // A couple of point lights on by default so metallic surfaces have something to reflect.
+    m_lighting.pointCount = 2;
+    m_lighting.points[0] = {{3.0f, 3.0f, 2.0f}, 20.0f, {1.0f, 0.7f, 0.4f}, 40.0f};
+    m_lighting.points[1] = {{-3.0f, 2.0f, -2.0f}, 20.0f, {0.4f, 0.6f, 1.0f}, 30.0f};
+
     m_initialized = true;
-    spdlog::info("Renderer initialized");
+    spdlog::info("Renderer initialized (forward PBR + HDR tonemap)");
     return true;
 }
 
@@ -97,13 +117,12 @@ Texture2D* Renderer::CreateTexture(const summer::assets::Image& image, bool srgb
     return raw;
 }
 
-Model* Renderer::CreateModel(const summer::assets::MeshData& meshData, Texture2D* fallbackBaseColor) {
+Model* Renderer::CreateModel(const summer::assets::MeshData& meshData) {
     if (!m_initialized) {
         return nullptr;
     }
     auto model = std::make_unique<Model>();
-    Texture2D* fallback = fallbackBaseColor ? fallbackBaseColor : &m_defaultTexture;
-    if (!model->Load(m_device, m_srvHeap, meshData, fallback)) {
+    if (!model->Load(m_device, m_srvHeap, meshData, m_materialDefaults)) {
         return nullptr;
     }
     Model* raw = model.get();
@@ -111,26 +130,33 @@ Model* Renderer::CreateModel(const summer::assets::MeshData& meshData, Texture2D
     return raw;
 }
 
-Model* Renderer::LoadModel(const std::string& path, Texture2D* fallbackBaseColor) {
+Model* Renderer::LoadModel(const std::string& path) {
     summer::assets::MeshData meshData;
     if (!summer::assets::ModelLoader::LoadFromFile(path, meshData)) {
         return nullptr;
     }
-    return CreateModel(meshData, fallbackBaseColor);
+    return CreateModel(meshData);
 }
 
 void Renderer::Shutdown() {
-    if (!m_initialized) {
-        return;
+    if (m_device.GetD3D12Device()) {
+        m_device.WaitForGpu();
     }
 
-    m_device.WaitForGpu();
-
-    // Models and textures free their SRV slots, so release them (and ImGui) before the heap.
+    // Models/textures free SRV slots; release them (and ImGui, HDR target) before the heap.
     m_models.clear();
     m_textures.clear();
-    m_defaultTexture.Shutdown();
-    m_basicPipeline.Shutdown();
+    m_defaultBaseColor.Shutdown();
+    m_defaultNormal.Shutdown();
+    m_defaultMetalRough.Shutdown();
+    m_defaultOcclusion.Shutdown();
+    m_defaultEmissive.Shutdown();
+    m_materialDefaults = {};
+
+    m_frameCb.Shutdown();
+    m_pbrPipeline.Shutdown();
+    m_tonemapPipeline.Shutdown();
+    m_hdrTarget.Shutdown();
 
     m_imguiLayer.Shutdown();
     m_srvHeap.Shutdown();
@@ -143,18 +169,11 @@ void Renderer::OnResize(uint32_t width, uint32_t height) {
     if (!m_initialized || width == 0 || height == 0) {
         return;
     }
-
     m_device.WaitForGpu();
     m_swapChain.Resize(m_device, width, height);
+    m_hdrTarget.Resize(m_device, width, height);
     m_viewportWidth = width;
     m_viewportHeight = height;
-}
-
-void Renderer::SetClearColor(float r, float g, float b, float a) {
-    m_clearColor[0] = r;
-    m_clearColor[1] = g;
-    m_clearColor[2] = b;
-    m_clearColor[3] = a;
 }
 
 void* Renderer::GetNativeDevice() const {
@@ -199,69 +218,85 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
         return;
     }
 
-    if (!CheckHRESULT(frame.CommandAllocator->Reset(), "Reset command allocator")) {
-        return;
-    }
-    if (!CheckHRESULT(
-            m_device.GetCommandList()->Reset(frame.CommandAllocator, nullptr),
-            "Reset command list")) {
+    if (!CheckHRESULT(frame.CommandAllocator->Reset(), "Reset command allocator") ||
+        !CheckHRESULT(m_device.GetCommandList()->Reset(frame.CommandAllocator, nullptr), "Reset command list")) {
         return;
     }
 
     ID3D12GraphicsCommandList* commandList = m_device.GetCommandList();
 
-    TransitionResource(
-        backBuffer,
-        D3D12_RESOURCE_STATE_PRESENT,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    // --- Update per-frame constants ---
+    const DirectX::XMMATRIX view = scene.GetCamera().GetViewMatrix();
+    const DirectX::XMMATRIX proj = scene.GetCamera().GetProjectionMatrix(Aspect());
+    const DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(view, proj);
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_swapChain.GetRTV(backBufferIndex);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_swapChain.GetDSV();
-    commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    commandList->ClearRenderTargetView(rtv, m_clearColor, 0, nullptr);
-    commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    FrameConstants fc{};
+    DirectX::XMStoreFloat4x4(&fc.viewProj, DirectX::XMMatrixTranspose(viewProj));
+    fc.cameraPos = scene.GetCamera().GetPosition();
+    fc.dirLight = m_lighting.directional;
+    fc.ambient = m_lighting.ambient;
+    fc.pointLightCount = m_lighting.pointCount;
+    for (int i = 0; i < m_lighting.pointCount && i < static_cast<int>(kMaxPointLights); ++i) {
+        fc.pointLights[i] = m_lighting.points[i];
+    }
+    m_frameCb.Update(backBufferIndex, &fc, sizeof(FrameConstants));
 
-    const D3D12_VIEWPORT viewport{
-        0.0f, 0.0f,
-        static_cast<float>(m_viewportWidth),
-        static_cast<float>(m_viewportHeight),
-        0.0f, 1.0f};
-    const D3D12_RECT scissor{
-        0, 0, static_cast<LONG>(m_viewportWidth), static_cast<LONG>(m_viewportHeight)};
-    commandList->RSSetViewports(1, &viewport);
-    commandList->RSSetScissorRects(1, &scissor);
-
-    // Bind the shared shader-visible heap so material SRV tables resolve.
+    // Shared heap stays bound for PBR material SRVs and the tonemap HDR SRV.
     ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
     commandList->SetDescriptorHeaps(1, heaps);
 
-    m_basicPipeline.Bind(commandList);
+    const D3D12_VIEWPORT viewport{
+        0.0f, 0.0f, static_cast<float>(m_viewportWidth), static_cast<float>(m_viewportHeight), 0.0f, 1.0f};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(m_viewportWidth), static_cast<LONG>(m_viewportHeight)};
+    commandList->RSSetViewports(1, &viewport);
+    commandList->RSSetScissorRects(1, &scissor);
 
-    // view * proj is shared across entities; only the world (and thus MVP) changes per entity.
-    const DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(
-        scene.GetCamera().GetViewMatrix(),
-        scene.GetCamera().GetProjectionMatrix(Aspect()));
+    // --- Pass 1: PBR scene into the HDR target ---
+    TransitionResource(
+        m_hdrTarget.Resource(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = m_hdrTarget.GetRTV();
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_swapChain.GetDSV();
+    commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
+    commandList->ClearRenderTargetView(hdrRtv, m_clearColor, 0, nullptr);
+    commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    m_pbrPipeline.Bind(commandList);
+    m_pbrPipeline.SetFrameConstants(commandList, m_frameCb.GetGpuAddress(backBufferIndex));
 
     for (const summer::scene::Entity& entity : scene.GetEntities()) {
         if (!entity.model) {
             continue;
         }
         const DirectX::XMMATRIX world = DirectX::XMLoadFloat4x4(&entity.transform);
-        const DirectX::XMMATRIX mvp = DirectX::XMMatrixMultiply(world, viewProj);
 
-        DirectX::XMFLOAT4X4 mvpTransposed;
-        DirectX::XMStoreFloat4x4(&mvpTransposed, DirectX::XMMatrixTranspose(mvp));
+        DirectX::XMFLOAT4X4 model;
+        DirectX::XMStoreFloat4x4(&model, DirectX::XMMatrixTranspose(world));
+        // Upload inverse(world); HLSL column-major interpretation yields transpose(inverse(world)).
+        DirectX::XMFLOAT4X4 normalMatrix;
+        DirectX::XMStoreFloat4x4(&normalMatrix, DirectX::XMMatrixInverse(nullptr, world));
 
-        m_basicPipeline.SetModelViewProj(commandList, mvpTransposed);
-        entity.model->Draw(commandList, m_basicPipeline);
+        m_pbrPipeline.SetObjectConstants(commandList, model, normalMatrix);
+        entity.model->Draw(commandList, m_pbrPipeline);
     }
+
+    TransitionResource(
+        m_hdrTarget.Resource(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    // --- Pass 2: tonemap HDR -> backbuffer, then ImGui ---
+    TransitionResource(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_swapChain.GetRTV(backBufferIndex);
+    commandList->OMSetRenderTargets(1, &backRtv, FALSE, nullptr);
+    m_tonemapPipeline.Draw(commandList, m_hdrTarget.GetSrvGpu(), m_exposure, m_tonemapOp);
 
     m_imguiLayer.RenderDrawData(commandList);
 
-    TransitionResource(
-        backBuffer,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT);
+    TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
 
     if (!CheckHRESULT(commandList->Close(), "Close command list")) {
         return;

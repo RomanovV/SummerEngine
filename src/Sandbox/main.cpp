@@ -3,8 +3,10 @@
 #include "Core/Log.h"
 #include "Core/Paths.h"
 #include "Gfx/GpuCapture.h"
+#include "Gfx/Model.h"
 #include "Gfx/Renderer.h"
 #include "Gfx/Texture2D.h"
+#include "Gfx/TonemapPipeline.h"
 #include "Platform/Window.h"
 #include "Scene/Scene.h"
 
@@ -18,7 +20,6 @@ using namespace DirectX;
 
 namespace {
 
-// Places a model in the scene at a position with uniform scale.
 void AddInstance(
     summer::scene::Scene& scene,
     summer::gfx::Model* model,
@@ -28,6 +29,13 @@ void AddInstance(
         XMMatrixScaling(scale, scale, scale) *
         XMMatrixTranslation(position.x, position.y, position.z);
     scene.AddEntity(model, world);
+}
+
+// Overrides every material's base color of a procedurally-created model (no imported textures).
+void SetModelBaseColor(summer::gfx::Model* model, summer::gfx::Texture2D* texture) {
+    for (summer::gfx::Material& material : model->Materials()) {
+        material.baseColor = texture;
+    }
 }
 
 } // namespace
@@ -60,39 +68,44 @@ int main() {
         return 1;
     }
 
-    summer::gfx::GpuCapture::SetActiveWindow(
-        renderer.GetNativeDevice(), window.GetNativeHandle());
+    summer::gfx::GpuCapture::SetActiveWindow(renderer.GetNativeDevice(), window.GetNativeHandle());
 
-    // Procedural textures: a subtle floor grid and a bolder cube checker.
+    // Procedural checkerboards for the plane + cubes (helmet brings its own textures).
     summer::gfx::Texture2D* floorTexture = renderer.CreateTexture(
         summer::assets::Image::MakeCheckerboard(256, 16, 0xFF6E6E6E, 0xFF4A4A4A));
     summer::gfx::Texture2D* cubeTexture = renderer.CreateTexture(
         summer::assets::Image::MakeCheckerboard(256, 4, 0xFFDFA24A, 0xFF2C2C34));
 
-    // Ground plane (procedural) + cubes (loaded via Assimp to exercise the mesh loader).
     summer::gfx::Model* planeModel =
-        renderer.CreateModel(summer::assets::Primitives::MakePlane(12.0f, 12.0f), floorTexture);
+        renderer.CreateModel(summer::assets::Primitives::MakePlane(12.0f, 12.0f));
+    summer::gfx::Model* cubeModel =
+        renderer.LoadModel(summer::Paths::Resolve("assets/models/cube.obj"));
+    summer::gfx::Model* helmetModel =
+        renderer.LoadModel(summer::Paths::Resolve("assets/models/FlightHelmet/glTF/FlightHelmet.gltf"));
 
-    const std::string cubePath = summer::Paths::Resolve("assets/models/cube.obj");
-    summer::gfx::Model* cubeModel = renderer.LoadModel(cubePath, cubeTexture);
     if (!planeModel || !cubeModel) {
-        spdlog::critical("Failed to create scene models");
+        spdlog::critical("Failed to create base scene models");
         return 1;
     }
+    if (!helmetModel) {
+        spdlog::warn("FlightHelmet not loaded; continuing without it");
+    }
+
+    SetModelBaseColor(planeModel, floorTexture);
+    SetModelBaseColor(cubeModel, cubeTexture);
 
     summer::scene::Scene scene;
     AddInstance(scene, planeModel, {0.0f, 0.0f, 0.0f}, 1.0f);
-    AddInstance(scene, cubeModel, {0.0f, 1.0f, 0.0f}, 1.0f);
+    if (helmetModel) {
+        AddInstance(scene, helmetModel, {0.0f, 0.0f, 0.0f}, 6.0f);
+    }
     AddInstance(scene, cubeModel, {-3.5f, 0.75f, 1.5f}, 0.75f);
     AddInstance(scene, cubeModel, {3.0f, 0.5f, -2.0f}, 0.5f);
-    AddInstance(scene, cubeModel, {1.5f, 1.5f, 3.0f}, 1.5f);
+    AddInstance(scene, cubeModel, {3.2f, 1.0f, 2.4f}, 1.0f);
 
     summer::scene::Camera& camera = scene.GetCamera();
-    camera.SetTarget({0.0f, 1.0f, 0.0f});
-    camera.SetDistance(14.0f);
-
-    float clearColor[4] = {0.08f, 0.09f, 0.12f, 1.0f};
-    renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+    camera.SetTarget({0.0f, 1.4f, 0.0f});
+    camera.SetDistance(8.0f);
 
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
@@ -131,9 +144,7 @@ int main() {
                 camera.Zoom(static_cast<float>(scroll));
             }
         }
-
         if (!io.WantCaptureKeyboard) {
-            // WASD/QE nudge the orbit target for quick framing.
             const float panStep = 40.0f;
             if (window.IsKeyDown(summer::Key::A)) camera.Pan(panStep, 0.0f);
             if (window.IsKeyDown(summer::Key::D)) camera.Pan(-panStep, 0.0f);
@@ -148,15 +159,50 @@ int main() {
         ImGui::Begin("Summer Sandbox");
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Text("Resolution: %d x %d", window.GetWidth(), window.GetHeight());
-        if (ImGui::ColorEdit4("Clear Color", clearColor)) {
-            renderer.SetClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+        const XMFLOAT3 camPos = camera.GetPosition();
+        ImGui::Text("Camera: %.2f, %.2f, %.2f", camPos.x, camPos.y, camPos.z);
+        ImGui::TextUnformatted("LMB orbit, MMB/RMB pan, scroll zoom, WASD/QE");
+
+        if (ImGui::CollapsingHeader("Tonemap", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SliderFloat("Exposure", &renderer.Exposure(), 0.05f, 8.0f, "%.2f");
+            int op = static_cast<int>(renderer.TonemapOperator());
+            if (ImGui::Combo("Operator", &op, "Reinhard\0ACES\0")) {
+                renderer.TonemapOperator() = static_cast<summer::gfx::TonemapPipeline::Operator>(op);
+            }
         }
 
-        ImGui::Separator();
-        ImGui::TextUnformatted("Camera: LMB orbit, MMB/RMB pan, scroll zoom, WASD/QE keys");
-        const XMFLOAT3 camPos = camera.GetPosition();
-        ImGui::Text("Position: %.2f, %.2f, %.2f", camPos.x, camPos.y, camPos.z);
-        ImGui::Text("Entities: %zu", scene.GetEntities().size());
+        if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+            summer::gfx::SceneLighting& lighting = renderer.Lighting();
+            ImGui::ColorEdit3("Ambient", &lighting.ambient.x);
+            ImGui::Separator();
+            ImGui::TextUnformatted("Directional");
+            ImGui::SliderFloat3("Direction", &lighting.directional.direction.x, -1.0f, 1.0f);
+            ImGui::ColorEdit3("Dir Color", &lighting.directional.color.x);
+            ImGui::SliderFloat("Dir Intensity", &lighting.directional.intensity, 0.0f, 10.0f);
+            ImGui::Separator();
+            ImGui::SliderInt("Point Lights", &lighting.pointCount, 0, summer::gfx::kMaxPointLights);
+            for (int i = 0; i < lighting.pointCount; ++i) {
+                ImGui::PushID(i);
+                ImGui::Text("Point %d", i);
+                ImGui::SliderFloat3("Pos", &lighting.points[i].position.x, -15.0f, 15.0f);
+                ImGui::ColorEdit3("Color", &lighting.points[i].color.x);
+                ImGui::SliderFloat("Intensity", &lighting.points[i].intensity, 0.0f, 100.0f);
+                ImGui::SliderFloat("Radius", &lighting.points[i].radius, 1.0f, 50.0f);
+                ImGui::PopID();
+            }
+        }
+
+        if (helmetModel && ImGui::CollapsingHeader("Helmet Materials")) {
+            int index = 0;
+            for (summer::gfx::Material& material : helmetModel->Materials()) {
+                ImGui::PushID(index);
+                ImGui::Text("Material %d", index);
+                ImGui::SliderFloat("Metallic", &material.metallicFactor, 0.0f, 1.0f);
+                ImGui::SliderFloat("Roughness", &material.roughnessFactor, 0.0f, 1.0f);
+                ImGui::PopID();
+                ++index;
+            }
+        }
 
         ImGui::Separator();
         ImGui::Text("PIX: %s", summer::gfx::GpuCapture::IsPixLoaded() ? "attached" : "not loaded");

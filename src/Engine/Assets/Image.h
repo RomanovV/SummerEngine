@@ -29,6 +29,10 @@ struct Image {
         uint32_t colorA = 0xFFFFFFFFu,
         uint32_t colorB = 0xFF303030u);
 
+    // 1x1 solid-color image (packed 0xAABBGGRR). Used for procedural default PBR maps
+    // (white base, flat normal, roughness=1/metal=0, black emissive, white occlusion).
+    static Image MakeSolid(uint32_t rgba, uint32_t size = 1);
+
     // Builds a full mip chain (including the base level at index 0) via box filtering,
     // down to 1x1. Returns an empty vector if the base image is invalid.
     static std::vector<Image> GenerateMipChain(const Image& base);

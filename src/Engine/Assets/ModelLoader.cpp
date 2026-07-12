@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <initializer_list>
 
 namespace summer::assets {
 
@@ -37,6 +38,23 @@ std::string ResolveTexturePath(const std::string& baseDir, const aiString& texPa
     return isAbsolute ? relative : baseDir + relative;
 }
 
+// Resolves the first available texture among the given types, or empty.
+std::string FirstTexture(
+    const aiMaterial* material,
+    const std::string& baseDir,
+    std::initializer_list<aiTextureType> types) {
+    aiString texPath;
+    for (aiTextureType type : types) {
+        if (material->GetTexture(type, 0, &texPath) == AI_SUCCESS) {
+            std::string resolved = ResolveTexturePath(baseDir, texPath);
+            if (!resolved.empty()) {
+                return resolved;
+            }
+        }
+    }
+    return {};
+}
+
 void ImportMaterials(const aiScene* scene, const std::string& baseDir, MeshData& outMesh) {
     outMesh.materials.reserve(scene->mNumMaterials);
     for (uint32_t materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
@@ -57,12 +75,37 @@ void ImportMaterials(const aiScene* scene, const std::string& baseDir, MeshData&
             data.baseColorFactor[3] = baseColor.a;
         }
 
-        // Prefer the PBR base color texture, fall back to the legacy diffuse slot.
-        aiString texPath;
-        if (material->GetTexture(aiTextureType_BASE_COLOR, 0, &texPath) == AI_SUCCESS ||
-            material->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
-            data.baseColorTexturePath = ResolveTexturePath(baseDir, texPath);
+        aiColor3D emissive;
+        if (material->Get(AI_MATKEY_COLOR_EMISSIVE, emissive) == AI_SUCCESS) {
+            data.emissiveFactor[0] = emissive.r;
+            data.emissiveFactor[1] = emissive.g;
+            data.emissiveFactor[2] = emissive.b;
         }
+
+        float metallic = 1.0f;
+        if (material->Get(AI_MATKEY_METALLIC_FACTOR, metallic) == AI_SUCCESS) {
+            data.metallicFactor = metallic;
+        }
+        float roughness = 1.0f;
+        if (material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness) == AI_SUCCESS) {
+            data.roughnessFactor = roughness;
+        }
+
+        // glTF base color -> BASE_COLOR (legacy DIFFUSE fallback).
+        data.baseColorTexturePath =
+            FirstTexture(material, baseDir, {aiTextureType_BASE_COLOR, aiTextureType_DIFFUSE});
+        // Tangent-space normal map.
+        data.normalTexturePath =
+            FirstTexture(material, baseDir, {aiTextureType_NORMALS, aiTextureType_HEIGHT});
+        // Packed metallic-roughness (Assimp exposes glTF's as METALNESS / DIFFUSE_ROUGHNESS / UNKNOWN).
+        data.metalRoughTexturePath = FirstTexture(
+            material,
+            baseDir,
+            {aiTextureType_METALNESS, aiTextureType_DIFFUSE_ROUGHNESS, aiTextureType_UNKNOWN});
+        // Occlusion (frequently the same ORM file as metalRough).
+        data.occlusionTexturePath = FirstTexture(
+            material, baseDir, {aiTextureType_AMBIENT_OCCLUSION, aiTextureType_LIGHTMAP});
+        data.emissiveTexturePath = FirstTexture(material, baseDir, {aiTextureType_EMISSIVE});
 
         outMesh.materials.push_back(std::move(data));
     }
@@ -78,10 +121,18 @@ void ApplyMatrixToVertex(Vertex& vertex, const aiMatrix4x4& matrix) {
     aiVector3D position(vertex.position[0], vertex.position[1], vertex.position[2]);
     aiVector3D normal(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
 
+    // Normals/tangents transform by the upper 3x3 (rotation/scale), not the translation.
+    aiMatrix3x3 linear(matrix);
+    aiVector3D tangent(vertex.tangent[0], vertex.tangent[1], vertex.tangent[2]);
+
     position = matrix * position;
-    normal = matrix * normal;
+    normal = linear * normal;
+    tangent = linear * tangent;
     if (normal.SquareLength() > 0.0f) {
         normal.Normalize();
+    }
+    if (tangent.SquareLength() > 0.0f) {
+        tangent.Normalize();
     }
 
     vertex.position[0] = position.x;
@@ -90,6 +141,10 @@ void ApplyMatrixToVertex(Vertex& vertex, const aiMatrix4x4& matrix) {
     vertex.normal[0] = normal.x;
     vertex.normal[1] = normal.y;
     vertex.normal[2] = normal.z;
+    vertex.tangent[0] = tangent.x;
+    vertex.tangent[1] = tangent.y;
+    vertex.tangent[2] = tangent.z;
+    // tangent[3] (handedness) is preserved.
 }
 
 void ProcessMesh(
@@ -122,6 +177,18 @@ void ProcessMesh(
             vertex.normal[0] = normal.x;
             vertex.normal[1] = normal.y;
             vertex.normal[2] = normal.z;
+        }
+
+        if (mesh->HasTangentsAndBitangents()) {
+            const aiVector3D& tangent = mesh->mTangents[vertexIndex];
+            const aiVector3D& bitangent = mesh->mBitangents[vertexIndex];
+            const aiVector3D& normal = mesh->mNormals[vertexIndex];
+            vertex.tangent[0] = tangent.x;
+            vertex.tangent[1] = tangent.y;
+            vertex.tangent[2] = tangent.z;
+            // Handedness: sign of the frame so the shader can reconstruct the bitangent.
+            const aiVector3D computedBitangent = normal ^ tangent; // cross(N, T)
+            vertex.tangent[3] = (computedBitangent * bitangent) < 0.0f ? -1.0f : 1.0f;
         }
 
         if (mesh->HasTextureCoords(0)) {
@@ -171,7 +238,8 @@ void ProcessNode(
 uint32_t BuildPostProcessFlags(uint32_t extraFlags) {
     // Baseline cleanup suitable for most sandbox experiments.
     uint32_t flags = aiProcess_Triangulate |
-                     aiProcess_GenNormals |
+                     aiProcess_GenSmoothNormals |
+                     aiProcess_CalcTangentSpace |
                      aiProcess_JoinIdenticalVertices |
                      aiProcess_ImproveCacheLocality |
                      aiProcess_GenUVCoords;
@@ -211,7 +279,7 @@ bool ModelLoader::LoadFromFile(
     ImportMaterials(scene, DirectoryOf(path), outMesh);
 
     spdlog::info(
-        "Loaded mesh '{}' — {} vertices, {} indices, {} submesh(es), {} material(s)",
+        "Loaded mesh '{}' - {} vertices, {} indices, {} submesh(es), {} material(s)",
         path,
         outMesh.vertexCount(),
         outMesh.indexCount(),
@@ -220,7 +288,7 @@ bool ModelLoader::LoadFromFile(
 
     for (const SubMesh& subMesh : outMesh.subMeshes) {
         spdlog::info(
-            "  SubMesh '{}' — {} indices, material {}",
+            "  SubMesh '{}' - {} indices, material {}",
             subMesh.name,
             subMesh.indexCount,
             subMesh.materialIndex);
