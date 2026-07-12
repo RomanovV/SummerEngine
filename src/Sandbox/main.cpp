@@ -24,9 +24,11 @@ void AddInstance(
     summer::scene::Scene& scene,
     summer::gfx::Model* model,
     const XMFLOAT3& position,
-    float scale) {
+    float scale,
+    float yawRadians = 0.0f) {
     const XMMATRIX world =
         XMMatrixScaling(scale, scale, scale) *
+        XMMatrixRotationY(yawRadians) *
         XMMatrixTranslation(position.x, position.y, position.z);
     scene.AddEntity(model, world);
 }
@@ -97,7 +99,8 @@ int main() {
     summer::scene::Scene scene;
     AddInstance(scene, planeModel, {0.0f, 0.0f, 0.0f}, 1.0f);
     if (helmetModel) {
-        AddInstance(scene, helmetModel, {0.0f, 0.0f, 0.0f}, 6.0f);
+        // Face the default camera: MakeLeftHanded flips imported models to face -Z.
+        AddInstance(scene, helmetModel, {0.0f, 0.0f, 0.0f}, 6.0f, XM_PI);
     }
     AddInstance(scene, cubeModel, {-3.5f, 0.75f, 1.5f}, 0.75f);
     AddInstance(scene, cubeModel, {3.0f, 0.5f, -2.0f}, 0.5f);
@@ -106,7 +109,6 @@ int main() {
     summer::scene::Camera& camera = scene.GetCamera();
     camera.SetTarget({0.0f, 1.4f, 0.0f});
     camera.SetDistance(8.0f);
-
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
     window.GetCursorPosition(lastMouseX, lastMouseY);

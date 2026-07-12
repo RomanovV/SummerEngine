@@ -242,7 +242,12 @@ uint32_t BuildPostProcessFlags(uint32_t extraFlags) {
                      aiProcess_CalcTangentSpace |
                      aiProcess_JoinIdenticalVertices |
                      aiProcess_ImproveCacheLocality |
-                     aiProcess_GenUVCoords;
+                     aiProcess_GenUVCoords |
+                     // Source assets (glTF/OBJ) are right-handed; our renderer is a
+                     // left-handed D3D pipeline. ConvertToLeftHanded = MakeLeftHanded
+                     // (negate Z) + FlipWindingOrder (keep faces front-facing) + FlipUVs
+                     // (Assimp stores UVs bottom-up; D3D samples top-down).
+                     aiProcess_ConvertToLeftHanded;
     return flags | extraFlags;
 }
 
