@@ -1,14 +1,16 @@
 #pragma once
 
 #include "Assets/MeshData.h"
-#include "Gfx/ColorTarget.h"
 #include "Gfx/ConstantBuffer.h"
+#include "Gfx/CpuDescriptorHeap.h"
+#include "Gfx/DepthStencil.h"
 #include "Gfx/Device.h"
 #include "Gfx/GpuDescriptorHeap.h"
 #include "Gfx/ImGuiLayer.h"
 #include "Gfx/Lighting.h"
 #include "Gfx/Model.h"
 #include "Gfx/PbrPipeline.h"
+#include "Gfx/RenderTarget.h"
 #include "Gfx/SwapChain.h"
 #include "Gfx/Texture2D.h"
 #include "Gfx/TonemapPipeline.h"
@@ -76,12 +78,15 @@ private:
 
     Device m_device;
     SwapChain m_swapChain;
-    GpuDescriptorHeap m_srvHeap;
+    GpuDescriptorHeap m_srvHeap;  // shader-visible CBV/SRV/UAV (global)
+    CpuDescriptorHeap m_rtvHeap;  // CPU-only RTV pool for offscreen targets (global)
+    CpuDescriptorHeap m_dsvHeap;  // CPU-only DSV pool (global)
     ImGuiLayer m_imguiLayer;
 
     PbrPipeline m_pbrPipeline;
     TonemapPipeline m_tonemapPipeline;
-    ColorTarget m_hdrTarget;
+    RenderTarget m_hdrTarget;
+    DepthStencil m_depth;
     ConstantBuffer m_frameCb;
 
     // Procedural fallback textures (one per PBR slot) + the bundle handed to models.

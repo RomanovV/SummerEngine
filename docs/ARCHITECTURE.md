@@ -2,7 +2,8 @@
 
 > Sandbox rendering engine for learning and experimenting with D3D12, shaders, and rendering techniques.
 > This document reflects the codebase as of **Phase 2** (forward PBR: metallic-roughness + normal mapping,
-> analytic lights, HDR target + tonemap).
+> analytic lights, HDR target + tonemap), plus the **resource/descriptor abstraction layer**
+> (`GpuTexture`, `RenderTarget`, `DepthStencil`, global RTV/DSV pools) introduced in preparation for Phase 3.
 
 ---
 
@@ -27,7 +28,7 @@ SummerEngine/
 │   │   ├── Core/           # Log, Paths
 │   │   ├── Platform/       # Window (GLFW)
 │   │   ├── Assets/         # MeshData, MaterialData, ModelLoader, Image, Primitives
-│   │   ├── Gfx/            # Device, SwapChain, Renderer, pipelines, textures, models
+│   │   ├── Gfx/            # Device, SwapChain, Renderer, pipelines, resources (RenderTarget/DepthStencil/GpuTexture), descriptors
 │   │   └── Scene/          # Camera, Scene (entity list)
 │   └── Sandbox/            # main.cpp
 ├── shaders/                # HLSL (PbrVS/PbrPS, FullscreenVS/TonemapPS) → compiled to .cso
@@ -66,16 +67,19 @@ graph TB
         subgraph Gfx["Gfx"]
             Renderer["Renderer<br/>(orchestrator)"]
             Device["Device<br/>(D3D12 core)"]
-            SwapChain["SwapChain<br/>(DXGI + depth)"]
+            SwapChain["SwapChain<br/>(DXGI back buffers)"]
             ImGuiLayer["ImGuiLayer"]
             SrvHeap["GpuDescriptorHeap<br/>(shared CBV/SRV/UAV)"]
+            RtvDsvHeaps["CpuDescriptorHeap ×2<br/>(RTV + DSV pools)"]
             Model["Model<br/>(mesh+materials)"]
             GpuMesh["GpuMesh<br/>(GPU buffers)"]
             Texture2D["Texture2D<br/>(SRV textures)"]
             Material["Material<br/>(PBR slots + factors)"]
             PbrPipeline["PbrPipeline<br/>(PSO + PBR shaders)"]
             TonemapPipeline["TonemapPipeline<br/>(fullscreen resolve)"]
-            ColorTarget["ColorTarget<br/>(HDR RT + SRV)"]
+            RenderTarget["RenderTarget<br/>(GpuTexture + RTV + SRV)"]
+            DepthStencil["DepthStencil<br/>(GpuTexture + DSV [+SRV])"]
+            GpuTexture["GpuTexture<br/>(resource + state/barriers)"]
             ConstantBuffer["ConstantBuffer<br/>(per-frame CB)"]
             Lighting["Lighting<br/>(FrameConstants)"]
             Buffer["Buffer<br/>(upload helper)"]
@@ -105,9 +109,11 @@ graph TB
     Renderer --> SwapChain
     Renderer --> ImGuiLayer
     Renderer --> SrvHeap
+    Renderer --> RtvDsvHeaps
     Renderer --> PbrPipeline
     Renderer --> TonemapPipeline
-    Renderer --> ColorTarget
+    Renderer --> RenderTarget
+    Renderer --> DepthStencil
     Renderer --> ConstantBuffer
     Renderer --> Model
     Renderer --> Texture2D
@@ -115,7 +121,11 @@ graph TB
 
     PbrPipeline --> Lighting
     ConstantBuffer --> Lighting
-    ColorTarget --> SrvHeap
+    RenderTarget --> GpuTexture
+    RenderTarget --> SrvHeap
+    RenderTarget --> RtvDsvHeaps
+    DepthStencil --> GpuTexture
+    DepthStencil --> RtvDsvHeaps
     Model --> GpuMesh
     Model --> Material
     Model --> Texture2D
@@ -143,7 +153,7 @@ graph TB
 | Namespace | Modules | Purpose |
 |---|---|---|
 | `summer::` | `Log`, `Paths`, `Window` | Platform-agnostic engine utilities |
-| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `PbrPipeline`, `TonemapPipeline`, `ColorTarget`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`) | All D3D12 rendering code |
+| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `CpuDescriptorHeap`, `SRVDescriptor`/`RTVDescriptor`/`DSVDescriptor`, `GpuTexture`, `RenderTarget`, `DepthStencil`, `PbrPipeline`, `TonemapPipeline`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`) | All D3D12 rendering code |
 | `summer::assets::` | `MeshData`, `MaterialData`, `ModelLoader`, `Image`, `Primitives` | CPU-side geometry / materials / images |
 | `summer::scene::` | `Scene`, `Entity`, `Camera` | Minimal scene graph (draw list + camera) |
 
@@ -159,12 +169,14 @@ Startup sequence in `Sandbox/main.cpp`:
 3. Window creation                   → GLFW window + HWND
 4. Renderer::Initialize(window)
    ├── Device::Initialize()          → DXGI factory, D3D12 device, queue, fence
-   ├── SwapChain::Initialize()       → swap chain bound to HWND, RTV heap, depth + DSV
+   ├── SwapChain::Initialize()       → swap chain bound to HWND + back-buffer RTVs (no depth)
    ├── GpuDescriptorHeap::Initialize()→ shared shader-visible CBV/SRV/UAV heap
-   ├── ColorTarget::Initialize()     → HDR target (R16G16B16A16_FLOAT) + private RTV + shared SRV
+   ├── CpuDescriptorHeap ×2          → global RTV + DSV pools (offscreen targets)
+   ├── RenderTarget::Initialize()    → HDR target (R16G16B16A16_FLOAT): GpuTexture + RTV + shared SRV
+   ├── DepthStencil::Initialize()    → depth target (D32_FLOAT): GpuTexture + DSV (SRV optional, off for now)
    ├── Default PBR textures          → white / flat-normal / ORM / black (procedural fallbacks)
    ├── ConstantBuffer::Initialize()  → per-frame CB (FrameConstants × FrameCount)
-   ├── PbrPipeline::Initialize()     → PBR root signature + PSO (HDR RTV format)
+   ├── PbrPipeline::Initialize()     → PBR root signature + PSO (HDR RTV + DepthStencil DSV formats)
    ├── TonemapPipeline::Initialize() → fullscreen resolve root sig + PSO (swapchain format)
    └── ImGuiLayer::Initialize()      → ImGui context, GLFW+DX12 backends (borrows the shared heap)
 5. GpuCapture::SetActiveWindow()     → associates RenderDoc overlay with device + window
@@ -303,17 +315,19 @@ graph LR
 
     SwapChain["SwapChain"]
     SwapChain --> DXGI["IDXGISwapChain3"]
-    SwapChain --> RTVHeap["RTV DescriptorHeap"]
-    SwapChain --> DSVHeap["DSV DescriptorHeap + depth"]
+    SwapChain --> SCRTVHeap["RTV DescriptorHeap (back buffers)"]
     SwapChain --> BackBuffers["BackBuffer Resources[2]"]
 
     Renderer["Renderer"]
     Renderer --> Device
     Renderer --> SwapChain
     Renderer --> SrvHeap["GpuDescriptorHeap<br/>(shared, shader-visible)"]
+    Renderer --> RtvHeap["CpuDescriptorHeap<br/>(RTV pool)"]
+    Renderer --> DsvHeap["CpuDescriptorHeap<br/>(DSV pool)"]
     Renderer --> Pbr["PbrPipeline<br/>(root sig + PSO)"]
     Renderer --> Tonemap["TonemapPipeline<br/>(root sig + PSO)"]
-    Renderer --> HDR["ColorTarget (HDR)<br/>private RTV heap + shared SRV"]
+    Renderer --> HDR["RenderTarget (HDR)<br/>GpuTexture + RTV + SRV"]
+    Renderer --> Depth["DepthStencil<br/>GpuTexture + DSV"]
     Renderer --> FrameCB["ConstantBuffer<br/>(per-frame CBV)"]
     Renderer --> Models["Model[] (owns GpuMesh + Texture2D)"]
     Renderer --> DefaultTex["default PBR Texture2D ×5"]
@@ -321,14 +335,24 @@ graph LR
     ImGuiLayer["ImGuiLayer"] -.borrows.-> SrvHeap
     Models -.allocate SRVs from.-> SrvHeap
     DefaultTex -.allocate SRV from.-> SrvHeap
-    HDR -.allocate SRV from.-> SrvHeap
+    HDR -.SRV from.-> SrvHeap
+    HDR -.RTV from.-> RtvHeap
+    Depth -.DSV from.-> DsvHeap
 ```
+
+> `RenderTarget` and `DepthStencil` compose a **`GpuTexture`** (which owns the resource and tracks its
+> current state) plus RAII descriptor wrappers (`RTVDescriptor` / `SRVDescriptor` / `DSVDescriptor`)
+> that borrow a slot from the relevant global heap. This is the reusable resource layer the G-buffer,
+> shadow maps, and post-process buffers will be built from (a `GBuffer` will *compose* a
+> `std::vector<RenderTarget>` + one `DepthStencil`, not inherit from `RenderTarget`).
 
 ### Key constants
 
 - **`FrameCount = 2`** — double-buffered swap chain. Defined in `Device.h`, used by `SwapChain`.
 - **`kSrvHeapCapacity = 1024`** — shared shader-visible CBV/SRV/UAV heap (ImGui font + engine textures).
   Defined in `Renderer.cpp`; grow as content grows.
+- **`kRtvHeapCapacity = 64` / `kDsvHeapCapacity = 16`** — global CPU-only RTV/DSV pools for offscreen
+  targets (HDR now; G-buffer / shadow maps / post-proc later). Defined in `Renderer.cpp`.
 
 ### PbrPipeline root signature
 
@@ -365,25 +389,29 @@ expensive, but required before destroying/resizing GPU resources or freeing uplo
 
 ## Descriptor Heaps
 
-D3D12 uses descriptor heaps instead of bind slots. SummerEngine currently has these:
+D3D12 uses descriptor heaps instead of bind slots. Heaps are managed as **global pools** (a free-list
+allocator per heap); individual resources borrow single slots via the RAII descriptor wrappers rather
+than each creating its own tiny heap. SummerEngine currently has these:
 
 | Heap | Type | Owner | Shader-visible? | Purpose |
 |---|---|---|---|---|
-| RTV heap | `..._RTV` | `SwapChain` | No | Back buffer render target views |
-| DSV heap | `..._DSV` | `SwapChain` | No | Depth-stencil for the 3D pass |
-| HDR RTV heap | `..._RTV` (1) | `ColorTarget` | No | Render target view for the HDR scene target |
-| SRV heap | `..._CBV_SRV_UAV` | `Renderer` (`GpuDescriptorHeap`) | **Yes** | ImGui font atlas + all engine textures + HDR SRV |
+| SRV heap | `..._CBV_SRV_UAV` (`GpuDescriptorHeap`) | `Renderer` | **Yes** | ImGui font atlas + all engine textures + HDR/other SRVs |
+| RTV pool | `..._RTV` (`CpuDescriptorHeap`) | `Renderer` | No | RTVs for offscreen targets (HDR now; G-buffer / post-proc later) |
+| DSV pool | `..._DSV` (`CpuDescriptorHeap`) | `Renderer` | No | DSVs for depth targets |
+| Back-buffer RTV heap | `..._RTV` | `SwapChain` | No | The 2 DXGI back-buffer RTVs (local — recreated on resize) |
 
 > **Important:** Only one shader-visible CBV/SRV/UAV heap can be bound per command list. ImGui, all
-> engine `Texture2D`s, and the HDR target's SRV therefore **share** the single `GpuDescriptorHeap`,
-> which uses a free-list allocator. ImGui 1.92+ requires app-provided alloc/free callbacks, which route
-> into the same heap.
+> engine `Texture2D`s, and offscreen-target SRVs therefore **share** the single `GpuDescriptorHeap`.
+> ImGui 1.92+ requires app-provided alloc/free callbacks, which route into the same heap.
+>
+> The **back-buffer RTVs stay in `SwapChain`** (they alias DXGI-owned resources recreated on every
+> resize); everything else pulls from the `Renderer`'s global RTV/DSV pools.
 
 ---
 
 ## HDR Rendering & Tonemap
 
-The PBR pass renders **linear HDR radiance** into an offscreen `ColorTarget` (`R16G16B16A16_FLOAT`),
+The PBR pass renders **linear HDR radiance** into an offscreen `RenderTarget` (`R16G16B16A16_FLOAT`),
 not directly to the swapchain. A fullscreen `TonemapPipeline` pass then resolves it to the (UNORM)
 backbuffer:
 
@@ -523,49 +551,75 @@ per-material metallic/roughness.
 
 ### ⬜ Phase 3 — Deferred rendering
 G-buffer (albedo / normal / metallic-roughness / depth) + a fullscreen lighting pass that **reuses the
-exact BRDF** from Phase 2 (so it's a port, not a rewrite). Makes many lights cheap.
+exact BRDF** from Phase 2 (so it's a port, not a rewrite). Makes many lights cheap. The reusable
+resource layer is already in place: the `GBuffer` will *compose* a `std::vector<RenderTarget>` + one
+sampleable `DepthStencil` (pass an SRV heap to `DepthStencil::Initialize` to enable depth sampling for
+world-position reconstruction).
 
 ### ⬜ Phase 4 — Shadows
 Directional shadow map (depth-only pass + PCF) sampled in the deferred lighting pass; then cascaded
 shadow maps. Point/omni shadows later. Needs Phase 1's multiple casters/receivers.
 
-### ⬜ Phase 5 — GPU instancing
+### ⬜ Phase 5 — Many lights: light culling + bindless
+Scale from a handful of analytic lights to hundreds. Three self-contained lessons, in order:
+1. **CPU light culling** — partition the screen into a tile grid (or view-space clusters/froxels),
+   and on the CPU assign each light to the tiles its bounding volume touches. Upload per-tile light
+   index lists as structured buffers; the deferred lighting pass reads only its tile's list instead
+   of looping over every light. No compute yet — the goal is to nail the light-list data layout and
+   the indirection.
+2. **GPU tiled light culling (Forward+ / tiled deferred)** — move the cull into a **compute shader**:
+   a depth pre-pass feeds per-tile min/max depth, the compute pass builds per-tile frustums and writes
+   culled light indices into UAV structured buffers consumed by the lighting pass. This is the engine's
+   first compute work (dispatch, thread groups, UAV barriers); optionally extend tiles → clusters.
+3. **Bindless resources** — replace per-draw SRV descriptor tables with descriptor indexing
+   (SM6.6 `ResourceDescriptorHeap` / dynamic indexing): materials, light buffers, and shadow maps are
+   addressed by integer index into the shared heap. Removes per-draw rebinding and unlocks
+   many-material + many-shadowed-light rendering.
+
+Depends on **Phase 3** (a deferred lighting pass to consume the tile lists) and integrates with
+**Phase 4** (tiles can carry shadowed lights; bindless indexes an array of shadow maps). The compute +
+UAV infrastructure introduced here is reused by volumetrics and GPU particles.
+
+### ⬜ Phase 6 — GPU instancing
 Instanced draw of many copies of a mesh (per-instance transforms via a structured/vertex buffer,
 `DrawIndexedInstanced`), plus optional GPU/indirect culling. **Depends only on Phase 1** and is
 largely orthogonal — it can be pulled earlier — but it lands here because Foliage and GPU VFX lean on
 it heavily (grass fields, debris) and it pairs well with the deferred path.
 
-### ⬜ Phase 6 — Foliage (alpha-masked)
+### ⬜ Phase 7 — Foliage (alpha-masked)
 Alpha test in the G-buffer pass (deferred-friendly, unlike blending), two-sided rendering, optional
 alpha-to-coverage. Depends on textures + deferred; benefits from instancing.
 
-### ⬜ Phase 7 — Translucency
+### ⬜ Phase 8 — Translucency
 Forward transparent pass after the deferred resolve — back-to-front sorting, blend states, reusing the
 forward PBR shader. This is *why* the forward path stays around; alpha blending can't live in the G-buffer.
 
-### ⬜ Phase 8 — Volumetric fog
+### ⬜ Phase 9 — Volumetric fog
 Height/uniform fog, raymarched or froxel-based, reading depth and **shadow maps** for light shafts.
-Naturally sits after shadows; benefits from compute.
+Naturally sits after shadows; reuses the compute + froxel work from Phase 5.
 
-### ⬜ Phase 9 — GPU VFX (particles)
+### ⬜ Phase 10 — GPU VFX (particles)
 Compute-driven particles: structured buffers, simulation in compute, indirect draw, sorted transparent
-rendering. Builds on the compute touched in volumetrics and the translucency pass. Fairly orthogonal,
+rendering. Builds on the compute from Phase 5/volumetrics and the translucency pass. Fairly orthogonal,
 but last makes sense since it leans on the most infrastructure.
 
 ### Dependency summary
 
 ```
 Phase 0 (logging/textures/heap) ─┐
-Phase 1 (multi-mesh + scene) ────┼─→ Phase 2 PBR(fwd) ─→ Phase 3 Deferred ─→ Phase 4 Shadows ─→ Phase 8 Volumetrics
-                                 │                             │       │
-                                 ├─────────────────→ Phase 5 GPU instancing ─┐
-                                 │                             ├─→ Phase 6 Foliage
-                                 │                             └─→ Phase 7 Translucency ─→ Phase 9 GPU particles
+Phase 1 (multi-mesh + scene) ────┼─→ Phase 2 PBR(fwd) ─→ Phase 3 Deferred ─→ Phase 4 Shadows ─┬─→ Phase 5 Light culling + bindless
+                                 │                                                            └─→ Phase 9 Volumetrics
+                                 ├──────────────────→ Phase 6 GPU instancing ─┬─→ Phase 7 Foliage
+                                 │                                            └─→ Phase 8 Translucency ─→ Phase 10 GPU particles
 ```
 
 Ordering rationale:
 - **Forward PBR before deferred** — debug the BRDF with minimal state, then the deferred light pass reuses it.
 - **Shadows after deferred** — write shadow sampling once, in the light pass.
+- **Light culling + bindless after deferred/shadows** — you need a many-light lighting pass to motivate
+  tiling; start on the **CPU** to nail the light-list layout, then move the cull to a **compute** shader,
+  then go **bindless** to index arbitrary lights/shadow maps/materials. First compute + UAV work in the
+  engine, reused by volumetrics and particles.
 - **Keep the forward path** — translucency and particles depend on it existing.
 - **Instancing is orthogonal** — only needs the Phase 1 draw list; slotted before Foliage since foliage relies on it.
 - **Scene stays minimal** until later; you don't need serialization to learn rendering, just a draw list + camera.
@@ -579,12 +633,16 @@ Ordering rationale:
 | `Sandbox/main.cpp` | You want to add UI, change the main loop, or edit the scene/camera controls |
 | `Gfx/Renderer.cpp` | You want to add render passes, resource pools, or change frame flow |
 | `Gfx/Device.cpp` | You need to understand GPU sync or add D3D12 objects |
-| `Gfx/SwapChain.cpp` | You need to change presentation or the depth/stencil target |
+| `Gfx/SwapChain.cpp` | You need to change presentation or the back-buffer RTVs |
 | `Gfx/GpuDescriptorHeap.cpp` | You allocate SRVs/CBVs/UAVs from the shared shader-visible heap |
+| `Gfx/CpuDescriptorHeap.cpp` | You change the global RTV/DSV descriptor pools |
+| `Gfx/Descriptors.cpp` | You change how SRV/RTV/DSV views are created or slots are managed |
+| `Gfx/GpuTexture.cpp` | You change texture-resource creation or state-tracked barriers |
+| `Gfx/RenderTarget.cpp` | You change an offscreen color target (HDR, and later G-buffer / post-proc) |
+| `Gfx/DepthStencil.cpp` | You change the depth target (incl. making it sampleable for deferred) |
 | `Gfx/ImGuiLayer.cpp` | You need to debug UI rendering or the shared-heap callbacks |
 | `Gfx/PbrPipeline.cpp` | You change the PBR root signature, PSO, or per-object/material constants |
 | `Gfx/TonemapPipeline.cpp` | You change the tonemap/fullscreen resolve pass |
-| `Gfx/ColorTarget.cpp` | You change the HDR render target / its RTV+SRV |
 | `Gfx/ConstantBuffer.cpp` | You change the per-frame CB (double-buffered upload) |
 | `Gfx/Lighting.h` | You change `FrameConstants` / light structs (keep in sync with `PbrPS.hlsl`) |
 | `Gfx/GpuMesh.cpp` | You change buffer upload or per-submesh draw setup |

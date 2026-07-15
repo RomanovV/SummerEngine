@@ -57,7 +57,12 @@ bool TonemapPipeline::CreateRootSignature(Device& device) {
     srvRange.NumDescriptors = 1;
     srvRange.BaseShaderRegister = 0; // t0
     srvRange.RegisterSpace = 0;
-    srvRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    // The HDR target is re-rendered every frame, so its contents change between executions.
+    // DATA_STATIC would (incorrectly) promise the driver they never change -> the debug layer's
+    // DATA_STATIC_DESCRIPTOR_INVALID_DATA_CHANGE error. DATA_STATIC_WHILE_SET_AT_EXECUTE only
+    // guarantees stability from when the table is bound (after the HDR pass writes) to end of
+    // execution, which is exactly the render-then-sample pattern here.
+    srvRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     D3D12_ROOT_PARAMETER1 rootParameters[2]{};

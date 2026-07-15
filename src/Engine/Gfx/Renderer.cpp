@@ -18,6 +18,9 @@ constexpr const char* kTonemapPsRelative = "shaders/TonemapPS.cso";
 
 // Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures + HDR SRV. Grow as content grows.
 constexpr uint32_t kSrvHeapCapacity = 1024;
+// CPU-only pools for offscreen render/depth targets (HDR, future G-buffer, shadow maps, post-proc).
+constexpr uint32_t kRtvHeapCapacity = 64;
+constexpr uint32_t kDsvHeapCapacity = 16;
 } // namespace
 
 Renderer::~Renderer() {
@@ -60,13 +63,18 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         return false;
     }
 
-    if (!m_srvHeap.Initialize(m_device.GetD3D12Device(), kSrvHeapCapacity)) {
-        m_swapChain.Shutdown();
-        m_device.Shutdown();
+    ID3D12Device* d3dDevice = m_device.GetD3D12Device();
+    if (!m_srvHeap.Initialize(d3dDevice, kSrvHeapCapacity) ||
+        !m_rtvHeap.Initialize(d3dDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvHeapCapacity) ||
+        !m_dsvHeap.Initialize(d3dDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvHeapCapacity)) {
+        Shutdown();
         return false;
     }
 
-    if (!m_hdrTarget.Initialize(m_device, m_srvHeap, m_viewportWidth, m_viewportHeight) ||
+    if (!m_hdrTarget.Initialize(
+            d3dDevice, m_rtvHeap, m_srvHeap, m_viewportWidth, m_viewportHeight,
+            DXGI_FORMAT_R16G16B16A16_FLOAT) ||
+        !m_depth.Initialize(d3dDevice, m_dsvHeap, m_viewportWidth, m_viewportHeight) ||
         !CreateDefaultTextures() ||
         !m_frameCb.Initialize(m_device, sizeof(FrameConstants), FrameCount)) {
         Shutdown();
@@ -76,7 +84,7 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
     const std::string pbrVs = summer::Paths::Resolve(kPbrVsRelative);
     const std::string pbrPs = summer::Paths::Resolve(kPbrPsRelative);
     if (!m_pbrPipeline.Initialize(
-            m_device, m_hdrTarget.Format(), m_swapChain.GetDepthFormat(), pbrVs.c_str(), pbrPs.c_str())) {
+            m_device, m_hdrTarget.Format(), m_depth.DsvFormat(), pbrVs.c_str(), pbrPs.c_str())) {
         Shutdown();
         return false;
     }
@@ -157,8 +165,11 @@ void Renderer::Shutdown() {
     m_pbrPipeline.Shutdown();
     m_tonemapPipeline.Shutdown();
     m_hdrTarget.Shutdown();
+    m_depth.Shutdown();
 
     m_imguiLayer.Shutdown();
+    m_rtvHeap.Shutdown();
+    m_dsvHeap.Shutdown();
     m_srvHeap.Shutdown();
     m_swapChain.Shutdown();
     m_device.Shutdown();
@@ -171,7 +182,8 @@ void Renderer::OnResize(uint32_t width, uint32_t height) {
     }
     m_device.WaitForGpu();
     m_swapChain.Resize(m_device, width, height);
-    m_hdrTarget.Resize(m_device, width, height);
+    m_hdrTarget.Resize(m_device.GetD3D12Device(), width, height);
+    m_depth.Resize(m_device.GetD3D12Device(), width, height);
     m_viewportWidth = width;
     m_viewportHeight = height;
 }
@@ -252,13 +264,10 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     commandList->RSSetScissorRects(1, &scissor);
 
     // --- Pass 1: PBR scene into the HDR target ---
-    TransitionResource(
-        m_hdrTarget.Resource(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = m_hdrTarget.GetRTV();
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_swapChain.GetDSV();
+    const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = m_hdrTarget.RTV();
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_depth.DSV();
     commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
     commandList->ClearRenderTargetView(hdrRtv, m_clearColor, 0, nullptr);
     commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
@@ -282,17 +291,14 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
         entity.model->Draw(commandList, m_pbrPipeline);
     }
 
-    TransitionResource(
-        m_hdrTarget.Resource(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     // --- Pass 2: tonemap HDR -> backbuffer, then ImGui ---
     TransitionResource(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     const D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_swapChain.GetRTV(backBufferIndex);
     commandList->OMSetRenderTargets(1, &backRtv, FALSE, nullptr);
-    m_tonemapPipeline.Draw(commandList, m_hdrTarget.GetSrvGpu(), m_exposure, m_tonemapOp);
+    m_tonemapPipeline.Draw(commandList, m_hdrTarget.SRV(), m_exposure, m_tonemapOp);
 
     m_imguiLayer.RenderDrawData(commandList);
 
