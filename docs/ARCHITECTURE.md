@@ -16,7 +16,7 @@ SummerEngine is split into two build targets:
 | **Engine** | Static library | All reusable boilerplate (platform, D3D12, assets, scene, ImGui) |
 | **Sandbox** | Console executable | Thin entry point; hosts experiment UI and the main loop |
 
-Third-party code lives in `vendor/` as git submodules. Build is driven by **Premake5** generating a VS 2022 solution.
+Third-party code lives in `vendor/` as git submodules. Build is driven by **Premake5** generating a VS 2026 solution (MSVC toolset v145).
 
 ```
 SummerEngine/
@@ -501,11 +501,12 @@ premake5.lua
 Generate and build:
 
 ```powershell
-.\vendor\premake\premake5.exe vs2022
-msbuild build\SummerEngine.sln /p:Configuration=Debug /p:Platform=x64
+.\vendor\premake\premake5.exe vs2026
+msbuild build\SummerEngine.slnx /p:Configuration=Debug /p:Platform=x64
 .\build\bin\Debug\Sandbox.exe
 ```
 
+- Toolchain is **Visual Studio 2026** (Premake action `vs2026`, MSVC toolset **v145**). `systemversion "latest"` selects the newest installed Windows SDK. Assimp is configured with the CMake generator `Visual Studio 18 2026`, which produces `assimp-vc145-*` static libs.
 - Shaders compile via a **prebuild** step (`scripts/compile_shaders.ps1`, DXC → `build/shaders/`).
 - Shaders + assets are copied next to the exe via a **postbuild** step (`scripts/stage_assets.ps1`).
 - Debug builds define `SUMMER_DEBUG`, which enables the D3D12 debug layer.

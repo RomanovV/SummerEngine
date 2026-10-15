@@ -3,6 +3,9 @@ workspace "SummerEngine"
     configurations { "Debug", "Release" }
     startproject "Sandbox"
     location "build"
+    -- Visual Studio 2026 (MSVC 14.51, platform toolset v145). Generate with: premake5 vs2026
+    toolset "msc-v145"
+    systemversion "latest"
 
     outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 
@@ -124,14 +127,14 @@ project "Engine"
             "vendor/assimp/build/lib/Debug",
             "vendor/assimp/build/contrib/zlib/Debug"
         }
-        links { "assimp-vc143-mtd", "zlibstaticd" }
+        links { "assimp-vc145-mtd", "zlibstaticd" }
 
     filter "configurations:Release"
         libdirs {
             "vendor/assimp/build/lib/Release",
             "vendor/assimp/build/contrib/zlib/Release"
         }
-        links { "assimp-vc143-mt", "zlibstatic" }
+        links { "assimp-vc145-mt", "zlibstatic" }
 
     filter "system:windows"
         defines { "_CRT_SECURE_NO_WARNINGS" }

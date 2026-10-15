@@ -7,7 +7,7 @@ $AssimpRoot = Join-Path $PSScriptRoot "..\vendor\assimp"
 $BuildDir   = Join-Path $AssimpRoot "build"
 
 Write-Host "Configuring Assimp..."
-cmake -S $AssimpRoot -B $BuildDir -G "Visual Studio 17 2022" -A x64 `
+cmake -S $AssimpRoot -B $BuildDir -G "Visual Studio 18 2026" -A x64 `
     -DASSIMP_BUILD_ASSIMP_TOOLS=OFF `
     -DASSIMP_BUILD_TESTS=OFF `
     -DASSIMP_BUILD_SAMPLES=OFF `
