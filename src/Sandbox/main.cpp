@@ -2,6 +2,7 @@
 #include "Assets/Primitives.h"
 #include "Core/Log.h"
 #include "Core/Paths.h"
+#include "Gfx/DebugView.h"
 #include "Gfx/GpuCapture.h"
 #include "Gfx/Model.h"
 #include "Gfx/Renderer.h"
@@ -157,6 +158,79 @@ int main() {
         }
 
         renderer.BeginImGuiFrame();
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        ImGui::PushFont(nullptr, style.FontSizeBase * 2.0f);
+        ImGui::PushStyleVar(
+            ImGuiStyleVar_FramePadding,
+            ImVec2(style.FramePadding.x * 2.0f, style.FramePadding.y * 2.0f));
+        ImGui::PushStyleVar(
+            ImGuiStyleVar_ItemSpacing,
+            ImVec2(style.ItemSpacing.x * 1.5f, style.ItemSpacing.y * 2.0f));
+
+        float menuBarHeight = ImGui::GetFrameHeight();
+        if (ImGui::BeginMainMenuBar()) {
+            menuBarHeight = ImGui::GetWindowSize().y;
+            if (ImGui::BeginMenu("View")) {
+                const bool litSelected = renderer.GetDebugView() == summer::gfx::DebugView::Lit;
+                if (ImGui::MenuItem("Lit", nullptr, litSelected)) {
+                    renderer.SetDebugView(summer::gfx::DebugView::Lit);
+                }
+                if (ImGui::BeginMenu("GBuffer")) {
+                    const summer::gfx::DebugView gbufferViews[] = {
+                        summer::gfx::DebugView::GBufferOverview,
+                        summer::gfx::DebugView::GBufferAlbedo,
+                        summer::gfx::DebugView::GBufferNormal,
+                        summer::gfx::DebugView::GBufferOcclusion,
+                        summer::gfx::DebugView::GBufferMetallic,
+                        summer::gfx::DebugView::GBufferRoughness,
+                        summer::gfx::DebugView::GBufferEmissive,
+                        summer::gfx::DebugView::GBufferDepth,
+                    };
+                    for (summer::gfx::DebugView view : gbufferViews) {
+                        const bool selected = renderer.GetDebugView() == view;
+                        if (ImGui::MenuItem(summer::gfx::DebugViewLabel(view), nullptr, selected)) {
+                            renderer.SetDebugView(view);
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+        ImGui::PopStyleVar(2);
+        ImGui::PopFont();
+
+        if (renderer.GetDebugView() != summer::gfx::DebugView::Lit) {
+            ImDrawList* drawList = ImGui::GetForegroundDrawList();
+            const float menuH = menuBarHeight;
+            auto stamp = [&](const char* text, float x, float y) {
+                const ImVec2 pad(6.0f, 3.0f);
+                const ImVec2 size = ImGui::CalcTextSize(text);
+                const float labelY = (y < menuH + 1.0f) ? menuH + 4.0f : y + 4.0f;
+                const ImVec2 pmin(x + 6.0f, labelY);
+                const ImVec2 pmax(pmin.x + size.x + pad.x * 2.0f, pmin.y + size.y + pad.y * 2.0f);
+                drawList->AddRectFilled(pmin, pmax, IM_COL32(0, 0, 0, 160), 3.0f);
+                drawList->AddText(
+                    ImVec2(pmin.x + pad.x, pmin.y + pad.y), IM_COL32(255, 255, 255, 230), text);
+            };
+
+            if (renderer.GetDebugView() == summer::gfx::DebugView::GBufferOverview) {
+                const uint32_t width = static_cast<uint32_t>(window.GetWidth());
+                const uint32_t height = static_cast<uint32_t>(window.GetHeight());
+                summer::gfx::DebugViewTile tiles[summer::gfx::kGBufferOverviewTileCount];
+                summer::gfx::FillGBufferOverviewTiles(width, height, tiles);
+                const float cellW = static_cast<float>(width) / static_cast<float>(summer::gfx::kGBufferOverviewGrid);
+                const float cellH = static_cast<float>(height) / static_cast<float>(summer::gfx::kGBufferOverviewGrid);
+                stamp("Lit", cellW * 2.0f, cellH * 2.0f);
+                for (uint32_t i = 0; i < summer::gfx::kGBufferOverviewTileCount; ++i) {
+                    stamp(summer::gfx::DebugViewLabel(tiles[i].view), tiles[i].x, tiles[i].y);
+                }
+            } else {
+                stamp(summer::gfx::DebugViewLabel(renderer.GetDebugView()), 0.0f, 0.0f);
+            }
+        }
 
         ImGui::Begin("Summer Sandbox");
         ImGui::Text("FPS: %.1f", io.Framerate);

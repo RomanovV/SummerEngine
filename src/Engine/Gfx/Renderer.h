@@ -4,6 +4,8 @@
 #include "Gfx/ConstantBuffer.h"
 #include "Gfx/CpuDescriptorHeap.h"
 #include "Gfx/DepthStencil.h"
+#include "Gfx/DebugView.h"
+#include "Gfx/DebugViewPipeline.h"
 #include "Gfx/DeferredLightingPipeline.h"
 #include "Gfx/Device.h"
 #include "Gfx/GBuffer.h"
@@ -67,6 +69,9 @@ public:
     float& Exposure() { return m_exposure; }
     TonemapPipeline::Operator& TonemapOperator() { return m_tonemapOp; }
 
+    DebugView GetDebugView() const { return m_debugView; }
+    void SetDebugView(DebugView view) { m_debugView = view; }
+
     // Native ID3D12Device* for GPU capture tool integration. Null before Initialize().
     void* GetNativeDevice() const;
 
@@ -78,6 +83,14 @@ private:
 
     bool CreateDefaultTextures();
     float Aspect() const;
+    void SetViewportRect(ID3D12GraphicsCommandList* commandList, float x, float y, float width, float height);
+    void DrawGBufferDebug(
+        ID3D12GraphicsCommandList* commandList,
+        DebugViewPipeline::Mode mode,
+        float x,
+        float y,
+        float width,
+        float height);
 
     Device m_device;
     SwapChain m_swapChain;
@@ -90,6 +103,7 @@ private:
     GeometryPipeline m_geometryPipeline;
     DeferredLightingPipeline m_deferredLighting;
     TonemapPipeline m_tonemapPipeline;
+    DebugViewPipeline m_debugViewPipeline;
     RenderTarget m_hdrTarget;
     DepthStencil m_depth; // forward pass; the G-buffer owns the sampleable depth used later
     GBuffer m_gbuffer;
@@ -109,6 +123,7 @@ private:
     SceneLighting m_lighting;
     float m_exposure = 1.0f;
     TonemapPipeline::Operator m_tonemapOp = TonemapPipeline::Operator::ACES;
+    DebugView m_debugView = DebugView::Lit;
 
     float m_clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     uint32_t m_viewportWidth = 0;

@@ -152,7 +152,7 @@ graph TB
 | Namespace | Modules | Purpose |
 |---|---|---|
 | `summer::` | `Log`, `Paths`, `Window` | Platform-agnostic engine utilities |
-| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `CpuDescriptorHeap`, `SRVDescriptor`/`RTVDescriptor`/`DSVDescriptor`, `GpuTexture`, `RenderTarget`, `DepthStencil`, `GBuffer`, `GeometryPipeline`, `DeferredLightingPipeline`, `PbrPipeline`, `TonemapPipeline`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`) | All D3D12 rendering code |
+| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `CpuDescriptorHeap`, `SRVDescriptor`/`RTVDescriptor`/`DSVDescriptor`, `GpuTexture`, `RenderTarget`, `DepthStencil`, `GBuffer`, `GeometryPipeline`, `DeferredLightingPipeline`, `PbrPipeline`, `TonemapPipeline`, `DebugViewPipeline`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`, `DebugView.h`) | All D3D12 rendering code |
 | `summer::assets::` | `MeshData`, `MaterialData`, `ModelLoader`, `Image`, `Primitives` | CPU-side geometry / materials / images |
 | `summer::scene::` | `Scene`, `Entity`, `Camera` | Minimal scene graph (draw list + camera) |
 
@@ -431,6 +431,19 @@ flowchart LR
 
 ---
 
+## Debug Views
+
+The sandbox **View** menu bar switches the backbuffer visualization (`Renderer::SetDebugView`).
+`Lit` is the default deferred + tonemap path. **View → GBuffer** lists each packed channel plus
+**Overview**, which keeps Lit in the center of a 5×5 grid and tiles albedo / normal / occlusion /
+metallic / roughness / emissive / depth around the edges (Unreal-style buffer visualization).
+
+`DebugViewPipeline` samples the G-buffer SRVs with a fullscreen triangle (`DebugViewPS`) and a
+32-bit mode constant. Individual G-buffer views skip the lighting/tonemap passes; Overview still
+lights the center tile.
+
+---
+
 ## Asset Import Pipeline
 
 ```mermaid
@@ -662,5 +675,6 @@ Ordering rationale:
 | `shaders/DeferredLightingPS.hlsl` | Fullscreen G-buffer lighting + world-position reconstruction |
 | `shaders/PbrPS.hlsl` | Forward PBR (kept for later translucency) |
 | `shaders/TonemapPS.hlsl` | Tonemap / exposure / gamma experiments |
+| `shaders/DebugViewPS.hlsl` | G-buffer debug visualization (View menu) |
 | `premake5.lua` | You add source files, libs, or build steps |
 ```
