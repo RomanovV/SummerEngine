@@ -3,11 +3,52 @@
 #include "Gfx/GpuDescriptorHeap.h"
 
 #include <spdlog/spdlog.h>
+#include <utility>
 
 namespace summer::gfx {
 
 RenderTarget::~RenderTarget() {
     Shutdown();
+}
+
+RenderTarget::RenderTarget(RenderTarget&& other) noexcept
+    : m_rtvHeap(other.m_rtvHeap),
+      m_srvHeap(other.m_srvHeap),
+      m_texture(std::move(other.m_texture)),
+      m_rtv(std::move(other.m_rtv)),
+      m_srv(std::move(other.m_srv)),
+      m_format(other.m_format),
+      m_width(other.m_width),
+      m_height(other.m_height) {
+    for (int i = 0; i < 4; ++i) {
+        m_clearColor[i] = other.m_clearColor[i];
+    }
+    other.m_rtvHeap = nullptr;
+    other.m_srvHeap = nullptr;
+    other.m_width = 0;
+    other.m_height = 0;
+}
+
+RenderTarget& RenderTarget::operator=(RenderTarget&& other) noexcept {
+    if (this != &other) {
+        Shutdown();
+        m_rtvHeap = other.m_rtvHeap;
+        m_srvHeap = other.m_srvHeap;
+        m_texture = std::move(other.m_texture);
+        m_rtv = std::move(other.m_rtv);
+        m_srv = std::move(other.m_srv);
+        m_format = other.m_format;
+        m_width = other.m_width;
+        m_height = other.m_height;
+        for (int i = 0; i < 4; ++i) {
+            m_clearColor[i] = other.m_clearColor[i];
+        }
+        other.m_rtvHeap = nullptr;
+        other.m_srvHeap = nullptr;
+        other.m_width = 0;
+        other.m_height = 0;
+    }
+    return *this;
 }
 
 bool RenderTarget::Initialize(

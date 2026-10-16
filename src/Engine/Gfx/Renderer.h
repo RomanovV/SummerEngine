@@ -4,7 +4,10 @@
 #include "Gfx/ConstantBuffer.h"
 #include "Gfx/CpuDescriptorHeap.h"
 #include "Gfx/DepthStencil.h"
+#include "Gfx/DeferredLightingPipeline.h"
 #include "Gfx/Device.h"
+#include "Gfx/GBuffer.h"
+#include "Gfx/GeometryPipeline.h"
 #include "Gfx/GpuDescriptorHeap.h"
 #include "Gfx/ImGuiLayer.h"
 #include "Gfx/Lighting.h"
@@ -56,7 +59,7 @@ public:
     void OnResize(uint32_t width, uint32_t height);
 
     void BeginImGuiFrame();
-    // Renders the scene (PBR into HDR) then tonemaps + ImGui to the backbuffer.
+    // Geometry into the G-buffer, deferred lighting into HDR, then tonemap + ImGui.
     void RenderFrame(const summer::scene::Scene& scene);
 
     // --- Lighting / tonemap controls (for the UI) ---
@@ -84,9 +87,12 @@ private:
     ImGuiLayer m_imguiLayer;
 
     PbrPipeline m_pbrPipeline;
+    GeometryPipeline m_geometryPipeline;
+    DeferredLightingPipeline m_deferredLighting;
     TonemapPipeline m_tonemapPipeline;
     RenderTarget m_hdrTarget;
-    DepthStencil m_depth;
+    DepthStencil m_depth; // forward pass; the G-buffer owns the sampleable depth used later
+    GBuffer m_gbuffer;
     ConstantBuffer m_frameCb;
 
     // Procedural fallback textures (one per PBR slot) + the bundle handed to models.

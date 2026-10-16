@@ -27,6 +27,8 @@ public:
 
     GpuTexture(const GpuTexture&) = delete;
     GpuTexture& operator=(const GpuTexture&) = delete;
+    GpuTexture(GpuTexture&& other) noexcept;
+    GpuTexture& operator=(GpuTexture&& other) noexcept;
 
     bool Create(ID3D12Device* device, const Desc& desc);
     void Release();

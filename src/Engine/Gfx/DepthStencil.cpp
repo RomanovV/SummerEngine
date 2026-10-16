@@ -3,6 +3,7 @@
 #include "Gfx/GpuDescriptorHeap.h"
 
 #include <spdlog/spdlog.h>
+#include <utility>
 
 namespace summer::gfx {
 
@@ -42,6 +43,40 @@ DepthFormatTriple MapDepthFormats(DXGI_FORMAT depthFormat, bool needSrv) {
 
 DepthStencil::~DepthStencil() {
     Shutdown();
+}
+
+DepthStencil::DepthStencil(DepthStencil&& other) noexcept
+    : m_dsvHeap(other.m_dsvHeap),
+      m_srvHeap(other.m_srvHeap),
+      m_texture(std::move(other.m_texture)),
+      m_dsv(std::move(other.m_dsv)),
+      m_srv(std::move(other.m_srv)),
+      m_dsvFormat(other.m_dsvFormat),
+      m_width(other.m_width),
+      m_height(other.m_height) {
+    other.m_dsvHeap = nullptr;
+    other.m_srvHeap = nullptr;
+    other.m_width = 0;
+    other.m_height = 0;
+}
+
+DepthStencil& DepthStencil::operator=(DepthStencil&& other) noexcept {
+    if (this != &other) {
+        Shutdown();
+        m_dsvHeap = other.m_dsvHeap;
+        m_srvHeap = other.m_srvHeap;
+        m_texture = std::move(other.m_texture);
+        m_dsv = std::move(other.m_dsv);
+        m_srv = std::move(other.m_srv);
+        m_dsvFormat = other.m_dsvFormat;
+        m_width = other.m_width;
+        m_height = other.m_height;
+        other.m_dsvHeap = nullptr;
+        other.m_srvHeap = nullptr;
+        other.m_width = 0;
+        other.m_height = 0;
+    }
+    return *this;
 }
 
 bool DepthStencil::Initialize(

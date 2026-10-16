@@ -1,9 +1,8 @@
 # SummerEngine Architecture
 
 > Sandbox rendering engine for learning and experimenting with D3D12, shaders, and rendering techniques.
-> This document reflects the codebase as of **Phase 2** (forward PBR: metallic-roughness + normal mapping,
-> analytic lights, HDR target + tonemap), plus the **resource/descriptor abstraction layer**
-> (`GpuTexture`, `RenderTarget`, `DepthStencil`, global RTV/DSV pools) introduced in preparation for Phase 3.
+> This document reflects the codebase as of **Phase 3** (deferred PBR: G-buffer + fullscreen lighting
+> into the HDR target, then tonemap). The forward `PbrPipeline` remains for later translucency.
 
 ---
 
@@ -153,7 +152,7 @@ graph TB
 | Namespace | Modules | Purpose |
 |---|---|---|
 | `summer::` | `Log`, `Paths`, `Window` | Platform-agnostic engine utilities |
-| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `CpuDescriptorHeap`, `SRVDescriptor`/`RTVDescriptor`/`DSVDescriptor`, `GpuTexture`, `RenderTarget`, `DepthStencil`, `PbrPipeline`, `TonemapPipeline`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`) | All D3D12 rendering code |
+| `summer::gfx::` | `Device`, `SwapChain`, `Renderer`, `ImGuiLayer`, `GpuDescriptorHeap`, `CpuDescriptorHeap`, `SRVDescriptor`/`RTVDescriptor`/`DSVDescriptor`, `GpuTexture`, `RenderTarget`, `DepthStencil`, `GBuffer`, `GeometryPipeline`, `DeferredLightingPipeline`, `PbrPipeline`, `TonemapPipeline`, `ConstantBuffer`, `GpuMesh`, `Buffer`, `Texture2D`, `Material`, `Model`, `GpuCapture` (+ `Lighting.h`) | All D3D12 rendering code |
 | `summer::assets::` | `MeshData`, `MaterialData`, `ModelLoader`, `Image`, `Primitives` | CPU-side geometry / materials / images |
 | `summer::scene::` | `Scene`, `Entity`, `Camera` | Minimal scene graph (draw list + camera) |
 
@@ -550,12 +549,12 @@ sample loaded alongside procedural geometry. UI exposes lights, exposure, tonema
 per-material metallic/roughness.
 - *Optional sub-step (not done):* IBL — cubemap load + irradiance / prefilter / BRDF-LUT. Deferred.
 
-### ⬜ Phase 3 — Deferred rendering
-G-buffer (albedo / normal / metallic-roughness / depth) + a fullscreen lighting pass that **reuses the
-exact BRDF** from Phase 2 (so it's a port, not a rewrite). Makes many lights cheap. The reusable
-resource layer is already in place: the `GBuffer` will *compose* a `std::vector<RenderTarget>` + one
-sampleable `DepthStencil` (pass an SRV heap to `DepthStencil::Initialize` to enable depth sampling for
-world-position reconstruction).
+### ✅ Phase 3 — Deferred rendering *(done)*
+G-buffer (albedo+occlusion, world normal, metallic/roughness/emissive luminance, sampleable depth)
+plus a fullscreen lighting pass that **reuses `PbrCommon.hlsli` BRDF**. Geometry writes the G-buffer;
+lighting reconstructs world position from depth + `invViewProj` and writes the HDR target; tonemap is
+unchanged. `PbrPipeline` stays in the tree for Phase 8 translucency. Emissive is packed as luminance
+in G-buffer material.b.
 
 ### ⬜ Phase 4 — Shadows
 Directional shadow map (depth-only pass + PCF) sampled in the deferred lighting pass; then cascaded
@@ -641,11 +640,14 @@ Ordering rationale:
 | `Gfx/GpuTexture.cpp` | You change texture-resource creation or state-tracked barriers |
 | `Gfx/RenderTarget.cpp` | You change an offscreen color target (HDR, and later G-buffer / post-proc) |
 | `Gfx/DepthStencil.cpp` | You change the depth target (incl. making it sampleable for deferred) |
+| `Gfx/GBuffer.cpp` | You change the deferred G-buffer attachments or their clear values |
+| `Gfx/GeometryPipeline.cpp` | You change the G-buffer write PSO / material bindings |
+| `Gfx/DeferredLightingPipeline.cpp` | You change the fullscreen lighting root signature or PSO |
 | `Gfx/ImGuiLayer.cpp` | You need to debug UI rendering or the shared-heap callbacks |
-| `Gfx/PbrPipeline.cpp` | You change the PBR root signature, PSO, or per-object/material constants |
+| `Gfx/PbrPipeline.cpp` | You change the forward PBR root signature, PSO, or per-object/material constants |
 | `Gfx/TonemapPipeline.cpp` | You change the tonemap/fullscreen resolve pass |
 | `Gfx/ConstantBuffer.cpp` | You change the per-frame CB (double-buffered upload) |
-| `Gfx/Lighting.h` | You change `FrameConstants` / light structs (keep in sync with `PbrPS.hlsl`) |
+| `Gfx/Lighting.h` | You change `FrameConstants` / light structs (keep in sync with lighting shaders) |
 | `Gfx/GpuMesh.cpp` | You change buffer upload or per-submesh draw setup |
 | `Gfx/Model.cpp` | You change how a model resolves materials/textures or draws |
 | `Gfx/Texture2D.cpp` | You change GPU texture creation / mip upload / SRV setup |
@@ -655,8 +657,10 @@ Ordering rationale:
 | `Assets/Primitives.cpp` | You add procedural geometry |
 | `Scene/Camera.cpp` | You change camera behavior or projection |
 | `Scene/Scene.h` | You change the entity/draw-list model |
-| `shaders/PbrVS.hlsl` | Vertex shader experiments (world pos + TBN + uv) |
-| `shaders/PbrPS.hlsl` | PBR / lighting experiments (Cook–Torrance + normal mapping) |
+| `shaders/PbrVS.hlsl` | Vertex shader (world pos + TBN + uv); also used by the geometry pass |
+| `shaders/GBufferPS.hlsl` | Geometry-pass material sampling into the G-buffer |
+| `shaders/DeferredLightingPS.hlsl` | Fullscreen G-buffer lighting + world-position reconstruction |
+| `shaders/PbrPS.hlsl` | Forward PBR (kept for later translucency) |
 | `shaders/TonemapPS.hlsl` | Tonemap / exposure / gamma experiments |
 | `premake5.lua` | You add source files, libs, or build steps |
 ```

@@ -22,6 +22,8 @@ public:
 
     SRVDescriptor(const SRVDescriptor&) = delete;
     SRVDescriptor& operator=(const SRVDescriptor&) = delete;
+    SRVDescriptor(SRVDescriptor&& other) noexcept;
+    SRVDescriptor& operator=(SRVDescriptor&& other) noexcept;
 
     bool CreateTexture2D(
         ID3D12Device* device,
@@ -48,6 +50,8 @@ public:
 
     RTVDescriptor(const RTVDescriptor&) = delete;
     RTVDescriptor& operator=(const RTVDescriptor&) = delete;
+    RTVDescriptor(RTVDescriptor&& other) noexcept;
+    RTVDescriptor& operator=(RTVDescriptor&& other) noexcept;
 
     bool Create(
         ID3D12Device* device,
@@ -73,6 +77,8 @@ public:
 
     DSVDescriptor(const DSVDescriptor&) = delete;
     DSVDescriptor& operator=(const DSVDescriptor&) = delete;
+    DSVDescriptor(DSVDescriptor&& other) noexcept;
+    DSVDescriptor& operator=(DSVDescriptor&& other) noexcept;
 
     bool Create(
         ID3D12Device* device,

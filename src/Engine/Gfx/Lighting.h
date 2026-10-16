@@ -31,6 +31,7 @@ struct alignas(256) FrameConstants {
     DirectX::XMFLOAT3 ambient{0.03f, 0.03f, 0.04f};
     int pointLightCount = 0;
     PointLightGpu pointLights[kMaxPointLights];
+    DirectX::XMFLOAT4X4 invViewProj;
 };
 
 } // namespace summer::gfx

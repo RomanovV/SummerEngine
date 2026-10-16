@@ -23,6 +23,8 @@ public:
 
     DepthStencil(const DepthStencil&) = delete;
     DepthStencil& operator=(const DepthStencil&) = delete;
+    DepthStencil(DepthStencil&& other) noexcept;
+    DepthStencil& operator=(DepthStencil&& other) noexcept;
 
     // Pass srvHeap != nullptr to also create a sampleable SRV (typeless resource).
     bool Initialize(

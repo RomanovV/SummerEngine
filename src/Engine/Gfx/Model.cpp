@@ -1,5 +1,6 @@
 #include "Gfx/Model.h"
 #include "Gfx/Device.h"
+#include "Gfx/GeometryPipeline.h"
 #include "Gfx/GpuDescriptorHeap.h"
 #include "Gfx/PbrPipeline.h"
 
@@ -102,6 +103,21 @@ void Model::Shutdown() {
 }
 
 void Model::Draw(ID3D12GraphicsCommandList* commandList, PbrPipeline& pipeline) const {
+    if (!commandList) {
+        return;
+    }
+
+    m_mesh.Bind(commandList);
+
+    for (const summer::assets::SubMesh& subMesh : m_subMeshes) {
+        const uint32_t materialIndex =
+            subMesh.materialIndex < m_materials.size() ? subMesh.materialIndex : 0;
+        pipeline.SetMaterial(commandList, m_materials[materialIndex]);
+        m_mesh.DrawSubMesh(commandList, subMesh.indexOffset, subMesh.indexCount);
+    }
+}
+
+void Model::Draw(ID3D12GraphicsCommandList* commandList, GeometryPipeline& pipeline) const {
     if (!commandList) {
         return;
     }

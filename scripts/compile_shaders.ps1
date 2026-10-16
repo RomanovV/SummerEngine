@@ -22,9 +22,11 @@ Write-Host "Using DXC: $($dxc.FullName)"
 Write-Host "Output: $OutDir"
 
 $shaders = @(
+    @{ Name = "GBufferPS"; Type = "ps_6_0" },
     @{ Name = "PbrVS"; Type = "vs_6_0" },
     @{ Name = "PbrPS"; Type = "ps_6_0" },
     @{ Name = "FullscreenVS"; Type = "vs_6_0" },
+    @{ Name = "DeferredLightingPS"; Type = "ps_6_0" },
     @{ Name = "TonemapPS"; Type = "ps_6_0" }
 )
 

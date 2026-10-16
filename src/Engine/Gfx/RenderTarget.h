@@ -22,6 +22,8 @@ public:
 
     RenderTarget(const RenderTarget&) = delete;
     RenderTarget& operator=(const RenderTarget&) = delete;
+    RenderTarget(RenderTarget&& other) noexcept;
+    RenderTarget& operator=(RenderTarget&& other) noexcept;
 
     // clearColor is optional (defaults to opaque black) and is baked into the resource's optimized
     // clear value; call ClearColor() to clear with the matching value.

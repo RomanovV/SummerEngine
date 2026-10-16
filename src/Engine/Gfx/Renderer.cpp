@@ -13,7 +13,9 @@ namespace {
 // Compiled shaders are staged next to the executable (see scripts/stage_assets.ps1).
 constexpr const char* kPbrVsRelative = "shaders/PbrVS.cso";
 constexpr const char* kPbrPsRelative = "shaders/PbrPS.cso";
+constexpr const char* kGBufferPsRelative = "shaders/GBufferPS.cso";
 constexpr const char* kFullscreenVsRelative = "shaders/FullscreenVS.cso";
+constexpr const char* kDeferredLightingPsRelative = "shaders/DeferredLightingPS.cso";
 constexpr const char* kTonemapPsRelative = "shaders/TonemapPS.cso";
 
 // Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures + HDR SRV. Grow as content grows.
@@ -75,6 +77,8 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
             d3dDevice, m_rtvHeap, m_srvHeap, m_viewportWidth, m_viewportHeight,
             DXGI_FORMAT_R16G16B16A16_FLOAT) ||
         !m_depth.Initialize(d3dDevice, m_dsvHeap, m_viewportWidth, m_viewportHeight) ||
+        !m_gbuffer.Initialize(
+            d3dDevice, m_rtvHeap, m_dsvHeap, m_srvHeap, m_viewportWidth, m_viewportHeight) ||
         !CreateDefaultTextures() ||
         !m_frameCb.Initialize(m_device, sizeof(FrameConstants), FrameCount)) {
         Shutdown();
@@ -89,7 +93,20 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         return false;
     }
 
+    const std::string gbufferPs = summer::Paths::Resolve(kGBufferPsRelative);
+    if (!m_geometryPipeline.Initialize(m_device, pbrVs.c_str(), gbufferPs.c_str())) {
+        Shutdown();
+        return false;
+    }
+
     const std::string fsVs = summer::Paths::Resolve(kFullscreenVsRelative);
+    const std::string deferredPs = summer::Paths::Resolve(kDeferredLightingPsRelative);
+    if (!m_deferredLighting.Initialize(
+            m_device, m_hdrTarget.Format(), fsVs.c_str(), deferredPs.c_str())) {
+        Shutdown();
+        return false;
+    }
+
     const std::string tmPs = summer::Paths::Resolve(kTonemapPsRelative);
     if (!m_tonemapPipeline.Initialize(
             m_device, m_swapChain.GetFormat(), fsVs.c_str(), tmPs.c_str())) {
@@ -108,7 +125,7 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
     m_lighting.points[1] = {{-3.0f, 2.0f, -2.0f}, 20.0f, {0.4f, 0.6f, 1.0f}, 30.0f};
 
     m_initialized = true;
-    spdlog::info("Renderer initialized (forward PBR + HDR tonemap)");
+    spdlog::info("Renderer initialized (deferred PBR + HDR tonemap)");
     return true;
 }
 
@@ -163,9 +180,12 @@ void Renderer::Shutdown() {
 
     m_frameCb.Shutdown();
     m_pbrPipeline.Shutdown();
+    m_geometryPipeline.Shutdown();
+    m_deferredLighting.Shutdown();
     m_tonemapPipeline.Shutdown();
     m_hdrTarget.Shutdown();
     m_depth.Shutdown();
+    m_gbuffer.Shutdown();
 
     m_imguiLayer.Shutdown();
     m_rtvHeap.Shutdown();
@@ -184,6 +204,7 @@ void Renderer::OnResize(uint32_t width, uint32_t height) {
     m_swapChain.Resize(m_device, width, height);
     m_hdrTarget.Resize(m_device.GetD3D12Device(), width, height);
     m_depth.Resize(m_device.GetD3D12Device(), width, height);
+    m_gbuffer.Resize(m_device.GetD3D12Device(), width, height);
     m_viewportWidth = width;
     m_viewportHeight = height;
 }
@@ -244,6 +265,7 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
 
     FrameConstants fc{};
     DirectX::XMStoreFloat4x4(&fc.viewProj, DirectX::XMMatrixTranspose(viewProj));
+    DirectX::XMStoreFloat4x4(&fc.invViewProj, DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, viewProj)));
     fc.cameraPos = scene.GetCamera().GetPosition();
     fc.dirLight = m_lighting.directional;
     fc.ambient = m_lighting.ambient;
@@ -263,18 +285,19 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     commandList->RSSetViewports(1, &viewport);
     commandList->RSSetScissorRects(1, &scissor);
 
-    // --- Pass 1: PBR scene into the HDR target ---
-    m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = m_hdrTarget.RTV();
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_depth.DSV();
-    commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
-    commandList->ClearRenderTargetView(hdrRtv, m_clearColor, 0, nullptr);
-    commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-    m_pbrPipeline.Bind(commandList);
-    m_pbrPipeline.SetFrameConstants(commandList, m_frameCb.GetGpuAddress(backBufferIndex));
-
+    // --- Pass 1: geometry into the G-buffer ---
+    m_gbuffer.TransitionColorsTo(commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    m_gbuffer.TransitionDepthTo(commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[GBuffer::ColorCount];
+    m_gbuffer.CopyColorRtvs(rtvs);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_gbuffer.Depth().DSV();
+    commandList->OMSetRenderTargets(GBuffer::ColorCount, rtvs, FALSE, &dsv);
+    m_gbuffer.Clear(commandList);
+    
+    m_geometryPipeline.Bind(commandList);
+    m_geometryPipeline.SetFrameConstants(commandList, m_frameCb.GetGpuAddress(backBufferIndex));
+    
     for (const summer::scene::Entity& entity : scene.GetEntities()) {
         if (!entity.model) {
             continue;
@@ -287,13 +310,30 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
         DirectX::XMFLOAT4X4 normalMatrix;
         DirectX::XMStoreFloat4x4(&normalMatrix, DirectX::XMMatrixInverse(nullptr, world));
 
-        m_pbrPipeline.SetObjectConstants(commandList, model, normalMatrix);
-        entity.model->Draw(commandList, m_pbrPipeline);
+        m_geometryPipeline.SetObjectConstants(commandList, model, normalMatrix);
+        entity.model->Draw(commandList, m_geometryPipeline);
     }
+
+    m_gbuffer.TransitionColorsTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_gbuffer.TransitionDepthTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    // --- Pass 2: deferred lighting into the HDR target ---
+    m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv = m_hdrTarget.RTV();
+    commandList->OMSetRenderTargets(1, &hdrRtv, FALSE, nullptr);
+    commandList->ClearRenderTargetView(hdrRtv, m_clearColor, 0, nullptr);
+
+    m_deferredLighting.Draw(
+        commandList,
+        m_frameCb.GetGpuAddress(backBufferIndex),
+        m_gbuffer.Color(GBuffer::Albedo).SRV(),
+        m_gbuffer.Color(GBuffer::Normal).SRV(),
+        m_gbuffer.Color(GBuffer::Material).SRV(),
+        m_gbuffer.Depth().SRV());
 
     m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    // --- Pass 2: tonemap HDR -> backbuffer, then ImGui ---
+    // --- Pass 3: tonemap HDR -> backbuffer, then ImGui ---
     TransitionResource(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     const D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_swapChain.GetRTV(backBufferIndex);

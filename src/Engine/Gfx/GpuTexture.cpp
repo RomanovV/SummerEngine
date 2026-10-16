@@ -7,6 +7,26 @@ GpuTexture::~GpuTexture() {
     Release();
 }
 
+GpuTexture::GpuTexture(GpuTexture&& other) noexcept
+    : m_resource(other.m_resource), m_state(other.m_state), m_desc(other.m_desc) {
+    other.m_resource = nullptr;
+    other.m_state = D3D12_RESOURCE_STATE_COMMON;
+    other.m_desc = {};
+}
+
+GpuTexture& GpuTexture::operator=(GpuTexture&& other) noexcept {
+    if (this != &other) {
+        Release();
+        m_resource = other.m_resource;
+        m_state = other.m_state;
+        m_desc = other.m_desc;
+        other.m_resource = nullptr;
+        other.m_state = D3D12_RESOURCE_STATE_COMMON;
+        other.m_desc = {};
+    }
+    return *this;
+}
+
 bool GpuTexture::Create(ID3D12Device* device, const Desc& desc) {
     Release();
     if (!device || desc.width == 0 || desc.height == 0) {

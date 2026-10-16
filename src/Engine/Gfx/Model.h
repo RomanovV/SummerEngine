@@ -12,6 +12,7 @@ namespace summer::gfx {
 
 class Device;
 class GpuDescriptorHeap;
+class GeometryPipeline;
 class PbrPipeline;
 
 // Renderer-owned procedural fallback textures, used for any material slot a model lacks.
@@ -47,6 +48,7 @@ public:
     // Binds the mesh and draws every submesh with its material (textures + factors).
     // The per-object constants must already be set on the pipeline by the caller.
     void Draw(ID3D12GraphicsCommandList* commandList, PbrPipeline& pipeline) const;
+    void Draw(ID3D12GraphicsCommandList* commandList, GeometryPipeline& pipeline) const;
 
     // Mutable access to resolved materials (e.g. ImGui overrides). Order matches import order.
     std::vector<Material>& Materials() { return m_materials; }

@@ -9,6 +9,23 @@ SRVDescriptor::~SRVDescriptor() {
     Release();
 }
 
+SRVDescriptor::SRVDescriptor(SRVDescriptor&& other) noexcept
+    : m_heap(other.m_heap), m_handle(other.m_handle) {
+    other.m_heap = nullptr;
+    other.m_handle = {};
+}
+
+SRVDescriptor& SRVDescriptor::operator=(SRVDescriptor&& other) noexcept {
+    if (this != &other) {
+        Release();
+        m_heap = other.m_heap;
+        m_handle = other.m_handle;
+        other.m_heap = nullptr;
+        other.m_handle = {};
+    }
+    return *this;
+}
+
 bool SRVDescriptor::CreateTexture2D(
     ID3D12Device* device,
     GpuDescriptorHeap& heap,
@@ -50,6 +67,26 @@ RTVDescriptor::~RTVDescriptor() {
     Release();
 }
 
+RTVDescriptor::RTVDescriptor(RTVDescriptor&& other) noexcept
+    : m_heap(other.m_heap), m_cpu(other.m_cpu), m_index(other.m_index) {
+    other.m_heap = nullptr;
+    other.m_cpu = {};
+    other.m_index = CpuDescriptorHeap::kInvalidIndex;
+}
+
+RTVDescriptor& RTVDescriptor::operator=(RTVDescriptor&& other) noexcept {
+    if (this != &other) {
+        Release();
+        m_heap = other.m_heap;
+        m_cpu = other.m_cpu;
+        m_index = other.m_index;
+        other.m_heap = nullptr;
+        other.m_cpu = {};
+        other.m_index = CpuDescriptorHeap::kInvalidIndex;
+    }
+    return *this;
+}
+
 bool RTVDescriptor::Create(
     ID3D12Device* device,
     CpuDescriptorHeap& heap,
@@ -88,6 +125,26 @@ void RTVDescriptor::Release() {
 // --------------------------------------------------------------------------------------------
 DSVDescriptor::~DSVDescriptor() {
     Release();
+}
+
+DSVDescriptor::DSVDescriptor(DSVDescriptor&& other) noexcept
+    : m_heap(other.m_heap), m_cpu(other.m_cpu), m_index(other.m_index) {
+    other.m_heap = nullptr;
+    other.m_cpu = {};
+    other.m_index = CpuDescriptorHeap::kInvalidIndex;
+}
+
+DSVDescriptor& DSVDescriptor::operator=(DSVDescriptor&& other) noexcept {
+    if (this != &other) {
+        Release();
+        m_heap = other.m_heap;
+        m_cpu = other.m_cpu;
+        m_index = other.m_index;
+        other.m_heap = nullptr;
+        other.m_cpu = {};
+        other.m_index = CpuDescriptorHeap::kInvalidIndex;
+    }
+    return *this;
 }
 
 bool DSVDescriptor::Create(
