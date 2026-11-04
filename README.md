@@ -2,7 +2,9 @@
 
 A from-scratch **Direct3D 12** renderer — no engine middleware, no Unreal, no Unity. I use it to study rendering tech at the API level, keep the inner workings of a deferred frame visible, and show the kind of graphics systems I already build professionally.
 
-Opaque geometry is deferred: a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR into an HDR target, then a tonemap resolve hits the swapchain. Resources, descriptors, pipelines, and the frame graph are all explicit D3D12.
+Opaque geometry is deferred: a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR into an HDR target, then a tonemap resolve hits the swapchain. GPU
+resources, descriptors, pipeline states, synchronization, and render-pass sequencing are managed explicitly through
+Direct3D 12.
 
 <p align="center">
   <img src="docs/media/orbit.gif" alt="Orbiting the FlightHelmet scene under deferred PBR lighting" width="960">
@@ -76,7 +78,7 @@ World position is not stored. The lighting shader rebuilds it from depth and `in
 
 ---
 
-## Frame graph
+## Rendering Pipeline
 
 ```text
 geometry  →  G-buffer (MRT + depth)
@@ -124,6 +126,66 @@ For anyone interested in the implementation, these are good starting points:
 
 For a more detailed explanation of resource ownership, root signatures, synchronization, and the rendering pipeline, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+---
+
+## Engineering Decisions & Tradeoffs
+
+SummerEngine is both a rendering engine and a place to explore graphics architecture. Some design choices prioritize
+simplicity and experimentation today, while leaving room for more advanced techniques as the engine evolves.
+
+### Deferred Rendering and Future Hybrid Architecture
+
+SummerEngine currently uses deferred rendering for its main opaque geometry path. This provides a foundation for
+experimenting with advanced rendering techniques, including a planned Nanite-like micropolygon rasterizer, which I
+intend to explore using a deferred approach initially.
+
+I don't consider deferred rendering inherently superior to forward rendering. Both have advantages depending on scene
+complexity, lighting requirements, hardware, and memory constraints. In my professional experience with AAA open-world
+rendering, memory pressure is often as significant a concern as frame time, and deferred rendering's additional render
+targets and bandwidth requirements are important tradeoffs.
+
+I've also studied forward-oriented architectures, particularly through id Software's technical presentations, which
+demonstrate how effective a carefully designed forward renderer can be.
+
+My long-term goal is a hybrid architecture supporting deferred and Forward+ rendering, allowing me to experiment with
+different approaches and choose the most appropriate path for each rendering feature.
+
+### Explicit Resource Ownership and GPU Synchronization
+
+SummerEngine uses explicit D3D12 resource management with RAII-based wrappers, descriptor allocators, and manually
+tracked resource-state transitions.
+
+Frame execution uses per-back-buffer fences, allowing CPU and GPU work to overlap without unnecessarily draining the GPU
+every frame. Each back-buffer slot is synchronized before its command allocator and per-frame resources are reused. Full
+GPU synchronization is reserved for operations such as shutdown, resizing, and one-shot uploads.
+
+The current resource wrappers release their D3D12 references when their C++ owners are destroyed. This keeps ownership
+straightforward, but it also means resource destruction must be coordinated with outstanding GPU work. Per-back-buffer
+fences protect frame-resource reuse; they do not automatically guarantee that an arbitrary texture or descriptor is no
+longer referenced by another in-flight frame.
+
+As the engine grows toward dynamic resource streaming and runtime asset replacement, I plan to introduce fence-based
+deferred destruction for GPU resources and descriptor allocations. This will allow CPU-side owners to release resources
+without prematurely invalidating objects still referenced by the GPU or requiring a full GPU stall for every
+destruction.
+
+### Explicit Pass Scheduling and a Future Render Graph
+
+SummerEngine currently records its rendering passes explicitly inside `Renderer::RenderFrame()`, with manually managed
+resource transitions between geometry, deferred lighting, tonemapping, and debug/UI rendering.
+
+For the current pipeline, this keeps execution order and resource usage easy to inspect and debug without adding
+unnecessary abstractions.
+
+As I introduce shadow mapping, additional lighting passes, post-processing, temporal effects, and more intermediate
+resources, manually managing dependencies and transitions will become increasingly complex.
+
+I plan to introduce an API-agnostic render graph as I expand the engine toward Vulkan. The graph would describe passes
+and their resource dependencies independently of the graphics API, while backend-specific implementations would handle
+barriers, synchronization, and resource allocation.
+
+Beyond simplifying pass management, this should provide opportunities for transient resource reuse, lifetime analysis,
+and memory optimization—particularly important given the memory constraints I've encountered in production rendering.
 
 ---
 
@@ -137,6 +199,7 @@ SummerEngine is designed to support inspection and debugging of its rendering pi
 - **D3D12 Debug Layer:** Enabled in debug builds to help identify resource-state, descriptor, and API usage errors.
 - **G-buffer Visualization:** Runtime inspection of albedo, normals, depth, and packed material channels helps diagnose
   rendering and shading issues.
+---
 
 ### Frame inspection
 
@@ -151,7 +214,21 @@ usage across these stages.
 
 ### Performance measurements
 
-Reproducible GPU timings and capture comparisons will be added as the renderer evolves. No production-performance claims are made for the current sandbox implementation.
+Reproducible GPU timings and capture comparisons will be added as the renderer evolves. No production-performance claims
+are made for the current sandbox implementation.
+
+---
+
+## Download & Run
+
+Want to try SummerEngine without building it from source?
+
+A prebuilt Windows demo is available on
+the [GitHub Releases page](https://github.com/RomanovV/SummerEngine/releases/latest).
+
+Download the latest release, extract it, and launch `Sandbox.exe`.
+
+To compile the engine yourself or explore its implementation, follow the build instructions below.
 
 ---
 
@@ -195,8 +272,5 @@ Debug builds define `SUMMER_DEBUG` and enable the D3D12 debug layer.
 Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views.
 
 **Next:** directional shadow map → PCF → cascaded shadow maps, sampled in the deferred lighting pass. After that: tiled lights, instancing, foliage (alpha test in the G-buffer), translucency on the forward path.
-
-- Add binary release to github page.
-- 
 
 Details and file-level hook points: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
