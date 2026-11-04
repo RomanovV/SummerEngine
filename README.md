@@ -1,0 +1,158 @@
+# SummerEngine
+
+A from-scratch **Direct3D 12** renderer — no engine middleware, no Unreal, no Unity. I use it to study rendering tech at the API level, keep the inner workings of a deferred frame visible, and show the kind of graphics systems I already build professionally.
+
+Opaque geometry is deferred: a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR into an HDR target, then a tonemap resolve hits the swapchain. Resources, descriptors, pipelines, and the frame graph are all explicit D3D12.
+
+<p align="center">
+  <img src="docs/media/orbit.gif" alt="Orbiting the FlightHelmet scene under deferred PBR lighting" width="960">
+</p>
+
+<p align="center">
+  <em>Khronos FlightHelmet + procedural ground/cubes. Directional + point lights, ACES tonemap.
+  The yellow HUD is PIX when its GPU capturer is loaded.</em>
+</p>
+
+---
+
+## Why this exists
+
+I wanted a renderer I fully own, so I can try ideas and see how the thing actually works. Notes on how it's put together: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Deferred PBR** | Geometry writes a G-buffer; lighting is a fullscreen pass that reuses a shared Cook–Torrance BRDF (`PbrCommon.hlsli`). |
+| **HDR + tonemap** | Scene radiance is `R16G16B16A16_FLOAT`, then ACES or Reinhard + gamma onto an UNORM backbuffer. |
+| **G-buffer debug views** | Buffer visualization in the same spirit as UE: **View** menu with Lit, Overview, and packed channels (albedo, world normal, occlusion, metal, roughness, emissive, depth). |
+| **glTF / Assimp import** | Multi-material FlightHelmet (base color, normal, ORM, occlusion, emissive) plus procedural meshes. |
+| **D3D12 resource layer** | `GpuTexture`, `RenderTarget`, `DepthStencil`, RAII descriptors, global RTV/DSV/SRV heaps. |
+| **PIX / RenderDoc** | Same capture workflow I use on shipped titles: standalone launch, exe-relative assets, F11 for RenderDoc. |
+
+<p align="center">
+  <img src="docs/media/lit.png" alt="Deferred lit view of FlightHelmet" width="960">
+</p>
+
+<p align="center">
+  <em>Default Lit view — deferred lighting into HDR, ACES tonemap to the swapchain.</em>
+</p>
+
+---
+
+## G-buffer visualization
+
+The Overview mode keeps Lit in the center of a 5×5 frame and packs the individual targets around it, the same idea as Unreal’s buffer visualization.
+
+<p align="center">
+  <img src="docs/media/debug-views.gif" alt="Cycling Lit, Overview, and packed G-buffer channels" width="800">
+</p>
+
+<p align="center">
+  <img src="docs/media/gbuffer-overview.png" alt="G-buffer overview tiles around the lit scene" width="960">
+</p>
+
+Packed attachments, not one RT per slider:
+
+| Target | Format | Contents |
+|---|---|---|
+| Albedo | `R8G8B8A8_UNORM` | RGB albedo, **A occlusion** |
+| Normal | `R16G16B16A16_FLOAT` | World-space normals (signed) |
+| Material | `R8G8B8A8_UNORM` | R metallic, G roughness, B emissive luminance |
+| Depth | `D32` + `R32` SRV | Hardware depth; lighting reconstructs world position |
+
+<p align="center">
+  <img src="docs/media/gbuffer-albedo.png" alt="Albedo debug view" width="48%">
+  <img src="docs/media/gbuffer-normal.png" alt="World-normal debug view" width="48%">
+</p>
+<p align="center">
+  <img src="docs/media/gbuffer-metallic.png" alt="Metallic debug view" width="48%">
+  <img src="docs/media/gbuffer-roughness.png" alt="Roughness debug view" width="48%">
+</p>
+
+World position is not stored. The lighting shader rebuilds it from depth and `invViewProj` (with the D3D NDC Y flip).
+
+---
+
+## Frame graph
+
+```text
+geometry  →  G-buffer (MRT + depth)
+      ↘
+        deferred lighting  →  HDR  →  tonemap  →  backbuffer  →  ImGui
+      ↗
+G-buffer SRVs also feed DebugViewPipeline (full-screen or overview tiles)
+```
+
+`PbrPipeline` (forward) is still created so a later translucency pass can reuse it. It is **not** the live opaque path.
+
+<p align="center">
+  <img src="docs/media/sandbox-ui.png" alt="Sandbox ImGui controls for lights and tonemap" width="960">
+</p>
+
+<p align="center">
+  <em>Runtime controls: exposure, tonemap operator, directional + point lights, per-material metal/roughness.</em>
+</p>
+
+---
+
+## Stack
+
+- **API:** Direct3D 12, DXGI flip model, Root Signature 1.1
+- **Shaders:** HLSL 6.0, DXC, PIX/RenderDoc PDBs
+- **Window / UI:** GLFW (HWND only — no GL context) + Dear ImGui 1.92
+- **Assets:** Assimp 6.x (glTF, OBJ, …), stb_image, Khronos FlightHelmet
+- **Build:** Premake5 → VS 2026 / MSVC v145
+
+---
+
+## Controls
+
+| Input | Action |
+|---|---|
+| LMB drag | Orbit |
+| MMB / RMB drag | Pan |
+| Scroll, Q / E | Zoom |
+| WASD | Pan |
+| **View** menu | Lit / G-buffer modes |
+| F1–F9 | Lit, Overview, Albedo, Normal, Occlusion, Metallic, Roughness, Emissive, Depth |
+| H | Toggle the sandbox panel |
+| F11 | RenderDoc capture (if attached) |
+
+---
+
+## Build
+
+Windows, Visual Studio 2026, a recent Windows SDK with DXC.
+
+```powershell
+git clone --recurse-submodules https://github.com/RomanovV/SummerEngine.git
+cd SummerEngine
+
+.\scripts\build_assimp.ps1
+.\vendor\premake\premake5.exe vs2026
+msbuild build\SummerEngine.slnx /p:Configuration=Debug /p:Platform=x64
+.\build\bin\Debug\Sandbox.exe
+```
+
+Shaders compile in a prebuild step (`scripts/compile_shaders.ps1`). Assets and `.cso` files are staged next to the exe (`scripts/stage_assets.ps1`) so PIX and RenderDoc can launch it without a special working directory.
+
+Debug builds define `SUMMER_DEBUG` and enable the D3D12 debug layer.
+
+---
+
+## GitHub Release (optional)
+
+A binary drop is not published yet. When it is, it will be a zip of the staged `build/bin/Release` tree (`Sandbox.exe`, `shaders/`, `assets/`) so someone can run the sandbox without Visual Studio. Until then, the clone + build path above is the one to use.
+
+---
+
+## Roadmap
+
+Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views.
+
+**Next:** directional shadow map → PCF → cascaded shadow maps, sampled in the deferred lighting pass. After that: tiled lights, instancing, foliage (alpha test in the G-buffer), translucency on the forward path.
+
+Details and file-level hook points: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

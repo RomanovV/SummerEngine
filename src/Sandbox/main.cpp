@@ -159,6 +159,39 @@ int main() {
 
         renderer.BeginImGuiFrame();
 
+        if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::Lit);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferOverview);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferAlbedo);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F4, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferNormal);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferOcclusion);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F6, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferMetallic);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F7, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferRoughness);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F8, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferEmissive);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F9, false)) {
+            renderer.SetDebugView(summer::gfx::DebugView::GBufferDepth);
+        }
+
+        static bool showSandboxWindow = true;
+        if (ImGui::IsKeyPressed(ImGuiKey_H, false) && !ImGui::GetIO().WantTextInput) {
+            showSandboxWindow = !showSandboxWindow;
+        }
+
         const ImGuiStyle& style = ImGui::GetStyle();
         ImGui::PushFont(nullptr, style.FontSizeBase * 2.0f);
         ImGui::PushStyleVar(
@@ -230,6 +263,11 @@ int main() {
             } else {
                 stamp(summer::gfx::DebugViewLabel(renderer.GetDebugView()), 0.0f, 0.0f);
             }
+        }
+
+        if (!showSandboxWindow) {
+            renderer.RenderFrame(scene);
+            continue;
         }
 
         ImGui::Begin("Summer Sandbox");
