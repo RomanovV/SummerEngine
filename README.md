@@ -85,7 +85,7 @@ geometry  →  G-buffer (MRT + depth)
       ↗
 G-buffer SRVs also feed DebugViewPipeline (full-screen or overview tiles)
 ```
-
+This is manually scheduled, not yet a general-purpose render-graph abstraction.
 `PbrPipeline` (forward) is still created so a later translucency pass can reuse it. It is **not** the live opaque path.
 
 <p align="center">
@@ -105,6 +105,53 @@ G-buffer SRVs also feed DebugViewPipeline (full-screen or overview tiles)
 - **Window / UI:** GLFW (HWND only — no GL context) + Dear ImGui 1.92
 - **Assets:** Assimp 6.x (glTF, OBJ, …), stb_image, Khronos FlightHelmet
 - **Build:** Premake5 → VS 2026 / MSVC v145
+
+---
+
+## Code Highlights
+
+For anyone interested in the implementation, these are good starting points:
+
+| System | Implementation | What to look for |
+|---|---|---|
+| **Frame execution** | [`Renderer`](src/Engine/Gfx/Renderer.cpp) | Pass sequencing, command recording, resource transitions, and frame synchronization |
+| **G-buffer** | [`GBuffer`](src/Engine/Gfx/GBuffer.cpp) · [`GBufferPS.hlsl`](shaders/GBufferPS.hlsl) | Multiple render targets, PBR material packing, and sampleable depth |
+| **Deferred lighting** | [`DeferredLightingPipeline`](src/Engine/Gfx/DeferredLightingPipeline.cpp) · [`DeferredLightingPS.hlsl`](shaders/DeferredLightingPS.hlsl) | Fullscreen lighting, world-position reconstruction, and PBR evaluation |
+| **PBR shading** | [`PbrCommon.hlsli`](shaders/PbrCommon.hlsli) | Shared Cook–Torrance BRDF implementation |
+| **GPU resources** | [`GpuTexture`](src/Engine/Gfx/GpuTexture.cpp) · [`GpuDescriptorHeap`](src/Engine/Gfx/GpuDescriptorHeap.cpp) | Resource ownership, descriptor allocation, and explicit D3D12 management |
+| **Tonemapping** | [`TonemapPS.hlsl`](shaders/TonemapPS.hlsl) | HDR-to-backbuffer conversion, exposure, and tone mapping |
+| **Debug visualization** | [`DebugViewPS.hlsl`](shaders/DebugViewPS.hlsl) | G-buffer inspection and fullscreen debug views |
+
+For a more detailed explanation of resource ownership, root signatures, synchronization, and the rendering pipeline, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+
+---
+
+## GPU Profiling & Debugging
+
+SummerEngine is designed to support inspection and debugging of its rendering pipeline using **PIX** and **RenderDoc**.
+
+- **PIX:** GPU capture support is initialized before D3D12 device creation, allowing external GPU captures and
+  inspection of rendering commands.
+- **RenderDoc:** Supports frame captures when launched through RenderDoc, including an F11 capture shortcut.
+- **D3D12 Debug Layer:** Enabled in debug builds to help identify resource-state, descriptor, and API usage errors.
+- **G-buffer Visualization:** Runtime inspection of albedo, normals, depth, and packed material channels helps diagnose
+  rendering and shading issues.
+
+### Frame inspection
+
+The current rendering path provides three main stages for GPU inspection:
+
+1. **Geometry pass:** Draws opaque geometry into the G-buffer and sampleable depth target.
+2. **Deferred lighting pass:** Samples G-buffer attachments and evaluates PBR lighting into an HDR render target.
+3. **Tonemapping pass:** Resolves the HDR result to the swapchain backbuffer.
+
+The engine manages resource-state transitions and command recording explicitly, making it possible to follow resource
+usage across these stages.
+
+### Performance measurements
+
+Reproducible GPU timings and capture comparisons will be added as the renderer evolves. No production-performance claims are made for the current sandbox implementation.
 
 ---
 
@@ -143,16 +190,13 @@ Debug builds define `SUMMER_DEBUG` and enable the D3D12 debug layer.
 
 ---
 
-## GitHub Release (optional)
-
-A binary drop is not published yet. When it is, it will be a zip of the staged `build/bin/Release` tree (`Sandbox.exe`, `shaders/`, `assets/`) so someone can run the sandbox without Visual Studio. Until then, the clone + build path above is the one to use.
-
----
-
 ## Roadmap
 
 Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views.
 
 **Next:** directional shadow map → PCF → cascaded shadow maps, sampled in the deferred lighting pass. After that: tiled lights, instancing, foliage (alpha test in the G-buffer), translucency on the forward path.
+
+- Add binary release to github page.
+- 
 
 Details and file-level hook points: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
