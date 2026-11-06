@@ -32,6 +32,8 @@ struct alignas(256) FrameConstants {
     int pointLightCount = 0;
     PointLightGpu pointLights[kMaxPointLights];
     DirectX::XMFLOAT4X4 invViewProj;
+    DirectX::XMFLOAT4X4 lightViewProj;
+    DirectX::XMFLOAT4 shadowParams; // x = normal offset (world units), y = depth bias, z = 1/shadowMapSize, w = unused
 };
 
 } // namespace summer::gfx

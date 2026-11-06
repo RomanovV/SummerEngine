@@ -24,13 +24,17 @@ cbuffer FrameConstants : register(b1) {
     int pointLightCount;
     PointLight pointLights[kMaxPointLights];
     float4x4 invViewProj;
+    float4x4 lightViewProj;
+    float4 shadowParams;
 };
 
 Texture2D gAlbedo   : register(t0);
 Texture2D gNormal   : register(t1);
 Texture2D gMaterial : register(t2);
 Texture2D gDepth    : register(t3);
+Texture2D gShadowMap : register(t4);
 SamplerState gSampler : register(s0);
+SamplerComparisonState gShadowSampler : register(s1);
 
 struct PSInput {
     float4 position : SV_Position;
@@ -43,6 +47,30 @@ float3 WorldPositionFromDepth(float2 uv, float depth) {
     float4 clip = float4(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f, depth, 1.0f);
     float4 world = mul(clip, invViewProj);
     return world.xyz / world.w;
+}
+
+float DirectionalShadow(float3 worldPos, float3 N) {
+    float3 biasedPos = worldPos + N * shadowParams.x; // shadowParams.x = NormalOffset
+    float4 lightClip = mul(float4(biasedPos, 1.0f), lightViewProj);
+    float3 ndc = lightClip.xyz / lightClip.w;
+    float2 uv = float2(ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f);
+    
+    if (any(uv < 0.0f) || any(uv > 1.0f) || ndc.z > 1.0f) {
+        return 1.0f;
+    }
+    
+    float texel = shadowParams.z; // 1/shadow map size
+    float refDepth = ndc.z - shadowParams.y; // shadowParams.y = depth bias
+    float lit = 0.0f;
+    [unroll]
+    for (int y = -1; y <= 1; ++y) {
+        [unroll]
+        for (int x = -1; x <= 1; ++x) {
+            lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, uv + float2(x, y) * texel, refDepth);
+        }
+    }
+    
+    return lit / 9.0f; // 3x3 kernel
 }
 
 float4 main(PSInput input) : SV_Target {
@@ -68,7 +96,8 @@ float4 main(PSInput input) : SV_Target {
     {
         float3 L = normalize(-dirLight.direction);
         float3 radiance = dirLight.color * dirLight.intensity;
-        color += BRDF(N, V, L, radiance, albedo, metallic, roughness);
+        float shadow = DirectionalShadow(worldPos, N);
+        color += BRDF(N, V, L, radiance, albedo, metallic, roughness) * shadow;
     }
 
     for (int i = 0; i < pointLightCount; ++i) {

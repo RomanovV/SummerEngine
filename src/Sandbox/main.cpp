@@ -228,6 +228,14 @@ int main() {
                     }
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("Shadows")) {
+                    const summer::gfx::DebugView shadowView = summer::gfx::DebugView::ShadowMap;
+                    const bool selected = renderer.GetDebugView() == shadowView;
+                    if (ImGui::MenuItem(summer::gfx::DebugViewLabel(shadowView), nullptr, selected)) {
+                        renderer.SetDebugView(shadowView);
+                    }
+                    ImGui::EndMenu();
+                }
                 ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();
@@ -304,6 +312,16 @@ int main() {
                 ImGui::SliderFloat("Radius", &lighting.points[i].radius, 1.0f, 50.0f);
                 ImGui::PopID();
             }
+        }
+
+        if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+            summer::gfx::ShadowSettings& shadow = renderer.Shadow();
+            ImGui::SliderFloat3("Center", &shadow.center.x, -10.0f, 10.0f);
+            ImGui::SliderFloat("Ortho Size", &shadow.orthoSize, 2.0f, 60.0f);
+            ImGui::SliderFloat("Distance", &shadow.distance, 5.0f, 60.0f);
+            ImGui::SliderFloat("Far Z", &shadow.farZ, 5.0f, 120.0f);
+            ImGui::SliderFloat("Normal Offset", &shadow.normalOffset, 0.0f, 0.2f, "%.3f");
+            ImGui::SliderFloat("Depth Bias", &shadow.depthBias, 0.0f, 0.005f, "%.5f");
         }
 
         if (helmetModel && ImGui::CollapsingHeader("Helmet Materials")) {

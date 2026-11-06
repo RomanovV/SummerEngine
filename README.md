@@ -2,7 +2,7 @@
 
 A from-scratch **Direct3D 12** renderer — no engine middleware, no Unreal, no Unity. I use it to study rendering tech at the API level, keep the inner workings of a deferred frame visible, and show the kind of graphics systems I already build professionally.
 
-Opaque geometry is deferred: a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR into an HDR target, then a tonemap resolve hits the swapchain. GPU
+Opaque geometry is deferred: a depth-only shadow pass renders the sun's shadow map, a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR (with PCF-filtered sun shadows) into an HDR target, then a tonemap resolve hits the swapchain. GPU
 resources, descriptors, pipeline states, synchronization, and render-pass sequencing are managed explicitly through
 Direct3D 12.
 
@@ -28,8 +28,9 @@ I wanted a renderer I fully own, so I can try ideas and see how the thing actual
 | | |
 |---|---|
 | **Deferred PBR** | Geometry writes a G-buffer; lighting is a fullscreen pass that reuses a shared Cook–Torrance BRDF (`PbrCommon.hlsli`). |
+| **Directional shadows** | A depth-only pass renders the sun's shadow map. Deferred lighting compares against it with 3×3 PCF. Ambient, emissive, and point lights stay unshadowed. |
 | **HDR + tonemap** | Scene radiance is `R16G16B16A16_FLOAT`, then ACES or Reinhard + gamma onto an UNORM backbuffer. |
-| **G-buffer debug views** | Buffer visualization in the same spirit as UE: **View** menu with Lit, Overview, and packed channels (albedo, world normal, occlusion, metal, roughness, emissive, depth). |
+| **Debug views** | **View** menu in the same spirit as UE: Lit, a G-buffer Overview, packed channels (albedo, world normal, occlusion, metal, roughness, emissive, depth), and the shadow map. |
 | **glTF / Assimp import** | Multi-material FlightHelmet (base color, normal, ORM, occlusion, emissive) plus procedural meshes. |
 | **D3D12 resource layer** | `GpuTexture`, `RenderTarget`, `DepthStencil`, RAII descriptors, global RTV/DSV/SRV heaps. |
 | **PIX / RenderDoc** | Same capture workflow I use on shipped titles: standalone launch, exe-relative assets, F11 for RenderDoc. |
@@ -81,12 +82,22 @@ World position is not stored. The lighting shader rebuilds it from depth and `in
 ## Rendering Pipeline
 
 ```text
-geometry  →  G-buffer (MRT + depth)
+shadow pass  →  shadow map (depth from the sun)
+geometry     →  G-buffer (MRT + depth)
       ↘
-        deferred lighting  →  HDR  →  tonemap  →  backbuffer  →  ImGui
+        deferred lighting (sun term × shadow)  →  HDR  →  tonemap  →  backbuffer  →  ImGui
       ↗
-G-buffer SRVs also feed DebugViewPipeline (full-screen or overview tiles)
+G-buffer SRVs and the shadow map also feed DebugViewPipeline (full-screen or overview tiles)
 ```
+
+<p align="center">
+  <img src="docs/media/shadows.jpg" alt="Directional shadows on the FlightHelmet scene" width="960">
+</p>
+
+<p align="center">
+  <em>Directional shadow map with 3×3 PCF. The Shadows panel fits the light box and the bias. The yellow HUD is PIX.</em>
+</p>
+
 This is manually scheduled, not yet a general-purpose render-graph abstraction.
 `PbrPipeline` (forward) is still created so a later translucency pass can reuse it. It is **not** the live opaque path.
 
@@ -118,7 +129,8 @@ For anyone interested in the implementation, these are good starting points:
 |---|---|---|
 | **Frame execution** | [`Renderer`](src/Engine/Gfx/Renderer.cpp) | Pass sequencing, command recording, resource transitions, and frame synchronization |
 | **G-buffer** | [`GBuffer`](src/Engine/Gfx/GBuffer.cpp) · [`GBufferPS.hlsl`](shaders/GBufferPS.hlsl) | Multiple render targets, PBR material packing, and sampleable depth |
-| **Deferred lighting** | [`DeferredLightingPipeline`](src/Engine/Gfx/DeferredLightingPipeline.cpp) · [`DeferredLightingPS.hlsl`](shaders/DeferredLightingPS.hlsl) | Fullscreen lighting, world-position reconstruction, and PBR evaluation |
+| **Deferred lighting** | [`DeferredLightingPipeline`](src/Engine/Gfx/DeferredLightingPipeline.cpp) · [`DeferredLightingPS.hlsl`](shaders/DeferredLightingPS.hlsl) | Fullscreen lighting, world-position reconstruction, PBR evaluation, and the shadow lookup |
+| **Shadows** | [`ShadowPipeline`](src/Engine/Gfx/ShadowPipeline.cpp) · [`ShadowVS.hlsl`](shaders/ShadowVS.hlsl) | Depth-only pass from the sun; PCF and bias live in `DeferredLightingPS.hlsl` |
 | **PBR shading** | [`PbrCommon.hlsli`](shaders/PbrCommon.hlsli) | Shared Cook–Torrance BRDF implementation |
 | **GPU resources** | [`GpuTexture`](src/Engine/Gfx/GpuTexture.cpp) · [`GpuDescriptorHeap`](src/Engine/Gfx/GpuDescriptorHeap.cpp) | Resource ownership, descriptor allocation, and explicit D3D12 management |
 | **Tonemapping** | [`TonemapPS.hlsl`](shaders/TonemapPS.hlsl) | HDR-to-backbuffer conversion, exposure, and tone mapping |
@@ -172,12 +184,12 @@ destruction.
 ### Explicit Pass Scheduling and a Future Render Graph
 
 SummerEngine currently records its rendering passes explicitly inside `Renderer::RenderFrame()`, with manually managed
-resource transitions between geometry, deferred lighting, tonemapping, and debug/UI rendering.
+resource transitions between the shadow pass, geometry, deferred lighting, tonemapping, and debug/UI rendering.
 
 For the current pipeline, this keeps execution order and resource usage easy to inspect and debug without adding
 unnecessary abstractions.
 
-As I introduce shadow mapping, additional lighting passes, post-processing, temporal effects, and more intermediate
+As I add cascaded shadows, additional lighting passes, post-processing, temporal effects, and more intermediate
 resources, manually managing dependencies and transitions will become increasingly complex.
 
 I plan to introduce an API-agnostic render graph as I expand the engine toward Vulkan. The graph would describe passes
@@ -197,17 +209,18 @@ SummerEngine is designed to support inspection and debugging of its rendering pi
   inspection of rendering commands.
 - **RenderDoc:** Supports frame captures when launched through RenderDoc, including an F11 capture shortcut.
 - **D3D12 Debug Layer:** Enabled in debug builds to help identify resource-state, descriptor, and API usage errors.
-- **G-buffer Visualization:** Runtime inspection of albedo, normals, depth, and packed material channels helps diagnose
-  rendering and shading issues.
+- **Debug views:** Runtime inspection of albedo, normals, depth, packed material channels, and the shadow map helps
+  diagnose rendering and shading issues.
 ---
 
 ### Frame inspection
 
-The current rendering path provides three main stages for GPU inspection:
+The current rendering path provides four main stages for GPU inspection:
 
-1. **Geometry pass:** Draws opaque geometry into the G-buffer and sampleable depth target.
-2. **Deferred lighting pass:** Samples G-buffer attachments and evaluates PBR lighting into an HDR render target.
-3. **Tonemapping pass:** Resolves the HDR result to the swapchain backbuffer.
+1. **Shadow pass:** Draws opaque geometry into a depth-only shadow map from the sun's point of view.
+2. **Geometry pass:** Draws opaque geometry into the G-buffer and sampleable depth target.
+3. **Deferred lighting pass:** Samples the G-buffer and the shadow map, and evaluates PBR lighting into an HDR render target.
+4. **Tonemapping pass:** Resolves the HDR result to the swapchain backbuffer.
 
 The engine manages resource-state transitions and command recording explicitly, making it possible to follow resource
 usage across these stages.
@@ -240,7 +253,7 @@ To compile the engine yourself or explore its implementation, follow the build i
 | MMB / RMB drag | Pan |
 | Scroll, Q / E | Zoom |
 | WASD | Pan |
-| **View** menu | Lit / G-buffer modes |
+| **View** menu | Lit, G-buffer modes, shadow map |
 | F1–F9 | Lit, Overview, Albedo, Normal, Occlusion, Metallic, Roughness, Emissive, Depth |
 | H | Toggle the sandbox panel |
 | F11 | RenderDoc capture (if attached) |
@@ -269,8 +282,8 @@ Debug builds define `SUMMER_DEBUG` and enable the D3D12 debug layer.
 
 ## Roadmap
 
-Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views.
+Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views, directional shadow map with 3×3 PCF.
 
-**Next:** directional shadow map → PCF → cascaded shadow maps, sampled in the deferred lighting pass. After that: tiled lights, instancing, foliage (alpha test in the G-buffer), translucency on the forward path.
+**Next:** cascaded shadow maps. After that: tiled lights, instancing, foliage (alpha test in the G-buffer), translucency on the forward path.
 
 Details and file-level hook points: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

@@ -8,8 +8,8 @@ namespace summer::gfx {
 
 class Device;
 
-// Fullscreen (or viewport) visualization of G-buffer channels. Bindings:
-//   t0..t3  SRV tables  - albedo, normal, material, depth
+// Fullscreen (or viewport) visualization of G-buffer channels and the shadow map. Bindings:
+//   t0..t4  SRV tables  - albedo, normal, material, depth, shadow map
 //   b0      32-bit constants - visualization mode
 //   s0      static sampler - point, clamp
 class DebugViewPipeline {
@@ -22,6 +22,7 @@ public:
         Roughness,
         Emissive,
         Depth,
+        ShadowMap,
     };
 
     DebugViewPipeline() = default;
@@ -43,6 +44,7 @@ public:
         D3D12_GPU_DESCRIPTOR_HANDLE normal,
         D3D12_GPU_DESCRIPTOR_HANDLE material,
         D3D12_GPU_DESCRIPTOR_HANDLE depth,
+        D3D12_GPU_DESCRIPTOR_HANDLE shadowMap,
         Mode mode);
 
 private:

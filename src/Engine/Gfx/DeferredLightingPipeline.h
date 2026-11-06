@@ -10,7 +10,7 @@ class Device;
 
 // Fullscreen deferred lighting: samples the G-buffer + depth and writes linear HDR radiance.
 // Bindings:
-//   t0..t3  four SRV tables  - albedo, normal, material, depth
+//   t0..t4  four SRV tables  - albedo, normal, material, depth, shadow map
 //   b1      CBV              - FrameConstants (camera + lights + invViewProj)
 //   s0      static sampler   - point, clamp
 class DeferredLightingPipeline {
@@ -34,7 +34,8 @@ public:
         D3D12_GPU_DESCRIPTOR_HANDLE albedo,
         D3D12_GPU_DESCRIPTOR_HANDLE normal,
         D3D12_GPU_DESCRIPTOR_HANDLE material,
-        D3D12_GPU_DESCRIPTOR_HANDLE depth);
+        D3D12_GPU_DESCRIPTOR_HANDLE depth,
+        D3D12_GPU_DESCRIPTOR_HANDLE shadowMap);
 
 private:
     bool CreateRootSignature(Device& device);

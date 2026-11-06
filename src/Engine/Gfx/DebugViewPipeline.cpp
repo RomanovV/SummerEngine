@@ -43,8 +43,10 @@ bool DebugViewPipeline::LoadShaderBytecode(const char* path, std::vector<uint8_t
 }
 
 bool DebugViewPipeline::CreateRootSignature(Device& device) {
-    D3D12_DESCRIPTOR_RANGE1 ranges[4]{};
-    for (uint32_t i = 0; i < 4; ++i) {
+    constexpr uint32_t kSrvCount = 5; // albedo, normal, material, depth, shadow map
+
+    D3D12_DESCRIPTOR_RANGE1 ranges[kSrvCount]{};
+    for (uint32_t i = 0; i < kSrvCount; ++i) {
         ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         ranges[i].NumDescriptors = 1;
         ranges[i].BaseShaderRegister = i;
@@ -53,19 +55,20 @@ bool DebugViewPipeline::CreateRootSignature(Device& device) {
         ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     }
 
-    D3D12_ROOT_PARAMETER1 params[5]{};
-    for (uint32_t i = 0; i < 4; ++i) {
+    // Params: [0..4]=SRV tables t0..t4, [5]=mode constant b0.
+    D3D12_ROOT_PARAMETER1 params[kSrvCount + 1]{};
+    for (uint32_t i = 0; i < kSrvCount; ++i) {
         params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         params[i].DescriptorTable.NumDescriptorRanges = 1;
         params[i].DescriptorTable.pDescriptorRanges = &ranges[i];
     }
 
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].Constants.ShaderRegister = 0;
-    params[4].Constants.RegisterSpace = 0;
-    params[4].Constants.Num32BitValues = 1;
+    params[kSrvCount].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[kSrvCount].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[kSrvCount].Constants.ShaderRegister = 0;
+    params[kSrvCount].Constants.RegisterSpace = 0;
+    params[kSrvCount].Constants.Num32BitValues = 1;
 
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -160,6 +163,7 @@ void DebugViewPipeline::Draw(
     D3D12_GPU_DESCRIPTOR_HANDLE normal,
     D3D12_GPU_DESCRIPTOR_HANDLE material,
     D3D12_GPU_DESCRIPTOR_HANDLE depth,
+    D3D12_GPU_DESCRIPTOR_HANDLE shadowMap,
     Mode mode) {
     commandList->SetPipelineState(m_pipelineState);
     commandList->SetGraphicsRootSignature(m_rootSignature);
@@ -167,8 +171,9 @@ void DebugViewPipeline::Draw(
     commandList->SetGraphicsRootDescriptorTable(1, normal);
     commandList->SetGraphicsRootDescriptorTable(2, material);
     commandList->SetGraphicsRootDescriptorTable(3, depth);
+    commandList->SetGraphicsRootDescriptorTable(4, shadowMap);
     const uint32_t modeValue = static_cast<uint32_t>(mode);
-    commandList->SetGraphicsRoot32BitConstants(4, 1, &modeValue, 0);
+    commandList->SetGraphicsRoot32BitConstants(5, 1, &modeValue, 0);
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->IASetVertexBuffers(0, 0, nullptr);
     commandList->IASetIndexBuffer(nullptr);

@@ -43,8 +43,9 @@ bool DeferredLightingPipeline::LoadShaderBytecode(const char* path, std::vector<
 }
 
 bool DeferredLightingPipeline::CreateRootSignature(Device& device) {
-    D3D12_DESCRIPTOR_RANGE1 ranges[4]{};
-    for (uint32_t i = 0; i < 4; ++i) {
+    constexpr uint32_t kSrvCount = 5; // albedo, normal, material, depth, shadow map
+    D3D12_DESCRIPTOR_RANGE1 ranges[kSrvCount]{};
+    for (uint32_t i = 0; i < kSrvCount; ++i) {
         ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         ranges[i].NumDescriptors = 1;
         ranges[i].BaseShaderRegister = i; // t0..t3
@@ -53,34 +54,44 @@ bool DeferredLightingPipeline::CreateRootSignature(Device& device) {
         ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     }
 
-    D3D12_ROOT_PARAMETER1 params[5]{};
-    for (uint32_t i = 0; i < 4; ++i) {
+    D3D12_ROOT_PARAMETER1 params[kSrvCount + 1]{};
+    for (uint32_t i = 0; i < kSrvCount; ++i) {
         params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         params[i].DescriptorTable.NumDescriptorRanges = 1;
         params[i].DescriptorTable.pDescriptorRanges = &ranges[i];
     }
 
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].Descriptor.ShaderRegister = 1; // b1
-    params[4].Descriptor.RegisterSpace = 0;
+    params[kSrvCount].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[kSrvCount].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[kSrvCount].Descriptor.ShaderRegister = 1; // b1
+    params[kSrvCount].Descriptor.RegisterSpace = 0;
 
-    D3D12_STATIC_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0; // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC samplers[2]{};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0; // s0
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 1; // s1
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootDesc{};
     rootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
     rootDesc.Desc_1_1.NumParameters = _countof(params);
     rootDesc.Desc_1_1.pParameters = params;
-    rootDesc.Desc_1_1.NumStaticSamplers = 1;
-    rootDesc.Desc_1_1.pStaticSamplers = &sampler;
+    rootDesc.Desc_1_1.NumStaticSamplers = _countof(samplers);
+    rootDesc.Desc_1_1.pStaticSamplers = samplers;
     rootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
     ComPtr<ID3DBlob> signature;
@@ -159,14 +170,16 @@ void DeferredLightingPipeline::Draw(
     D3D12_GPU_DESCRIPTOR_HANDLE albedo,
     D3D12_GPU_DESCRIPTOR_HANDLE normal,
     D3D12_GPU_DESCRIPTOR_HANDLE material,
-    D3D12_GPU_DESCRIPTOR_HANDLE depth) {
+    D3D12_GPU_DESCRIPTOR_HANDLE depth,
+    D3D12_GPU_DESCRIPTOR_HANDLE shadowMap) {
     commandList->SetPipelineState(m_pipelineState);
     commandList->SetGraphicsRootSignature(m_rootSignature);
     commandList->SetGraphicsRootDescriptorTable(0, albedo);
     commandList->SetGraphicsRootDescriptorTable(1, normal);
     commandList->SetGraphicsRootDescriptorTable(2, material);
     commandList->SetGraphicsRootDescriptorTable(3, depth);
-    commandList->SetGraphicsRootConstantBufferView(4, frameCb);
+    commandList->SetGraphicsRootDescriptorTable(4, shadowMap);
+    commandList->SetGraphicsRootConstantBufferView(5, frameCb);
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->IASetVertexBuffers(0, 0, nullptr);
     commandList->IASetIndexBuffer(nullptr);

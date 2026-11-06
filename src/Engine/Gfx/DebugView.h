@@ -16,6 +16,7 @@ enum class DebugView : uint32_t {
     GBufferRoughness,
     GBufferEmissive,
     GBufferDepth,
+    ShadowMap,
 };
 
 inline const char* DebugViewLabel(DebugView view) {
@@ -38,6 +39,8 @@ inline const char* DebugViewLabel(DebugView view) {
             return "Emissive";
         case DebugView::GBufferDepth:
             return "Depth";
+        case DebugView::ShadowMap:
+            return "Shadow Map";
         default:
             return "Unknown";
     }

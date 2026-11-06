@@ -10,6 +10,7 @@
 #include "Gfx/Device.h"
 #include "Gfx/GBuffer.h"
 #include "Gfx/GeometryPipeline.h"
+#include "Gfx/ShadowPipeline.h"
 #include "Gfx/GpuDescriptorHeap.h"
 #include "Gfx/ImGuiLayer.h"
 #include "Gfx/Lighting.h"
@@ -41,6 +42,16 @@ struct SceneLighting {
     int pointCount = 0;
     DirectX::XMFLOAT3 ambient{0.03f, 0.03f, 0.04f};
 };
+    
+struct ShadowSettings {
+    DirectX::XMFLOAT3 center{0.0f, 1.0f,0.0f};
+    float orthoSize = 20.0f; // width = height of the ortho box (world units)
+    float distance  = 20.0f; // how far the light eye backs away from the center
+    float nearZ     = 0.1f;
+    float farZ      = 40.0f; // must reach past center + half the scene depth
+    float normalOffset = 0.02f; // world units; start around 1~3 shadow-map texels
+    float depthBias = 0.0005f; // in [0,1] depth; 1.0 = full near-to-far range
+};
 
 class Renderer {
 public:
@@ -66,6 +77,7 @@ public:
 
     // --- Lighting / tonemap controls (for the UI) ---
     SceneLighting& Lighting() { return m_lighting; }
+    ShadowSettings& Shadow() { return m_shadow; }
     float& Exposure() { return m_exposure; }
     TonemapPipeline::Operator& TonemapOperator() { return m_tonemapOp; }
 
@@ -104,8 +116,11 @@ private:
     DeferredLightingPipeline m_deferredLighting;
     TonemapPipeline m_tonemapPipeline;
     DebugViewPipeline m_debugViewPipeline;
+    ShadowPipeline m_shadowPipeline;
+    
     RenderTarget m_hdrTarget;
     DepthStencil m_depth; // forward pass; the G-buffer owns the sampleable depth used later
+    DepthStencil m_shadowMap;
     GBuffer m_gbuffer;
     ConstantBuffer m_frameCb;
 
@@ -121,6 +136,7 @@ private:
     std::vector<std::unique_ptr<Model>> m_models;
 
     SceneLighting m_lighting;
+    ShadowSettings m_shadow;
     float m_exposure = 1.0f;
     TonemapPipeline::Operator m_tonemapOp = TonemapPipeline::Operator::ACES;
     DebugView m_debugView = DebugView::Lit;

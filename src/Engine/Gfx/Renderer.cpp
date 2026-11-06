@@ -18,12 +18,17 @@ constexpr const char* kFullscreenVsRelative = "shaders/FullscreenVS.cso";
 constexpr const char* kDeferredLightingPsRelative = "shaders/DeferredLightingPS.cso";
 constexpr const char* kTonemapPsRelative = "shaders/TonemapPS.cso";
 constexpr const char* kDebugViewPsRelative = "shaders/DebugViewPS.cso";
+constexpr const char* kShadowVsRelative = "shaders/ShadowVS.cso";
 
 // Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures + HDR SRV. Grow as content grows.
 constexpr uint32_t kSrvHeapCapacity = 1024;
 // CPU-only pools for offscreen render/depth targets (HDR, future G-buffer, shadow maps, post-proc).
 constexpr uint32_t kRtvHeapCapacity = 64;
 constexpr uint32_t kDsvHeapCapacity = 16;
+    
+// Shadow Depth Size
+constexpr uint32_t kShadowMapSize = 2048;
+    
 } // namespace
 
 Renderer::~Renderer() {
@@ -81,7 +86,8 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
         !m_gbuffer.Initialize(
             d3dDevice, m_rtvHeap, m_dsvHeap, m_srvHeap, m_viewportWidth, m_viewportHeight) ||
         !CreateDefaultTextures() ||
-        !m_frameCb.Initialize(m_device, sizeof(FrameConstants), FrameCount)) {
+        !m_frameCb.Initialize(m_device, sizeof(FrameConstants), FrameCount) ||
+        !m_shadowMap.Initialize(d3dDevice, m_dsvHeap, kShadowMapSize, kShadowMapSize, DXGI_FORMAT_D32_FLOAT, &m_srvHeap)) {
         Shutdown();
         return false;
     }
@@ -118,6 +124,13 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
     const std::string debugPs = summer::Paths::Resolve(kDebugViewPsRelative);
     if (!m_debugViewPipeline.Initialize(
             m_device, m_swapChain.GetFormat(), fsVs.c_str(), debugPs.c_str())) {
+        Shutdown();
+        return false;
+    }
+    
+    const std::string shadowVs = summer::Paths::Resolve(kShadowVsRelative);
+    if (!m_shadowPipeline.Initialize(
+            m_device, shadowVs.c_str())) {
         Shutdown();
         return false;
     }
@@ -192,9 +205,11 @@ void Renderer::Shutdown() {
     m_deferredLighting.Shutdown();
     m_tonemapPipeline.Shutdown();
     m_debugViewPipeline.Shutdown();
+    m_shadowPipeline.Shutdown();
     m_hdrTarget.Shutdown();
     m_depth.Shutdown();
     m_gbuffer.Shutdown();
+    m_shadowMap.Shutdown();
 
     m_imguiLayer.Shutdown();
     m_rtvHeap.Shutdown();
@@ -258,6 +273,7 @@ void Renderer::DrawGBufferDebug(
         m_gbuffer.Color(GBuffer::Normal).SRV(),
         m_gbuffer.Color(GBuffer::Material).SRV(),
         m_gbuffer.Depth().SRV(),
+        m_shadowMap.SRV(),
         mode);
 }
 
@@ -276,6 +292,8 @@ DebugViewPipeline::Mode GBufferModeFromView(DebugView view) {
             return DebugViewPipeline::Mode::Emissive;
         case DebugView::GBufferDepth:
             return DebugViewPipeline::Mode::Depth;
+        case DebugView::ShadowMap:
+            return DebugViewPipeline::Mode::ShadowMap;
         case DebugView::GBufferAlbedo:
         default:
             return DebugViewPipeline::Mode::Albedo;
@@ -326,6 +344,26 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     FrameConstants fc{};
     DirectX::XMStoreFloat4x4(&fc.viewProj, DirectX::XMMatrixTranspose(viewProj));
     DirectX::XMStoreFloat4x4(&fc.invViewProj, DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, viewProj)));
+    
+    DirectX::XMVECTOR dir = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&m_lighting.directional.direction));
+    DirectX::XMVECTOR center = DirectX::XMLoadFloat3(&m_shadow.center);
+    DirectX::XMVECTOR eye = DirectX::XMVectorSubtract(center, DirectX::XMVectorScale(dir, m_shadow.distance));
+    // LookAt breaks if "up" is parallel to the view direction; swap up when the sun is vertical.
+    DirectX::XMVECTOR up = fabsf(DirectX::XMVectorGetY(dir)) > 0.99f ? DirectX::XMVectorSet(0,0,1,0) : DirectX::XMVectorSet(0,1,0,0);
+
+    DirectX::XMMATRIX lightView = DirectX::XMMatrixLookAtLH(eye, center, up);
+    DirectX::XMMATRIX lightProj = DirectX::XMMatrixOrthographicLH(m_shadow.orthoSize, m_shadow.orthoSize, m_shadow.nearZ, m_shadow.farZ);
+    
+    DirectX::XMMATRIX lightViewProj = lightView * lightProj;
+    DirectX::XMStoreFloat4x4(&fc.lightViewProj, DirectX::XMMatrixTranspose(lightViewProj));
+    
+    fc.shadowParams = {
+        m_shadow.normalOffset,
+        m_shadow.depthBias,
+        1.0f / static_cast<float>(kShadowMapSize),
+        0.0f
+    };
+    
     fc.cameraPos = scene.GetCamera().GetPosition();
     fc.dirLight = m_lighting.directional;
     fc.ambient = m_lighting.ambient;
@@ -338,7 +376,34 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     // Shared heap stays bound for PBR material SRVs and the tonemap HDR SRV.
     ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
     commandList->SetDescriptorHeaps(1, heaps);
+    
+    m_shadowMap.TransitionTo(commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    const D3D12_VIEWPORT shadowVp{0, 0, float(kShadowMapSize), float(kShadowMapSize), 0.0f, 1.0f};
+    const D3D12_RECT shadowScissor{0,0,static_cast<LONG>(kShadowMapSize), static_cast<LONG>(kShadowMapSize)};
+    commandList->RSSetViewports(1, &shadowVp);
+    commandList->RSSetScissorRects(1, &shadowScissor);
+    
+    const D3D12_CPU_DESCRIPTOR_HANDLE shadowDsv = m_shadowMap.DSV();
+    commandList->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsv);
+    commandList->ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    
+    m_shadowPipeline.Bind(commandList);
+    m_shadowPipeline.SetLightViewProj(commandList, fc.lightViewProj);
+    for (const summer::scene::Entity& entity : scene.GetEntities()) {
+        if (!entity.model) {
+            continue;
+        }
+        const DirectX::XMMATRIX world = DirectX::XMLoadFloat4x4(&entity.transform);
 
+        DirectX::XMFLOAT4X4 model;
+        DirectX::XMStoreFloat4x4(&model, DirectX::XMMatrixTranspose(world));
+        m_shadowPipeline.SetObjectConstants(commandList, model);
+        entity.model->DrawDepthOnly(commandList);
+    }
+    
+    m_shadowMap.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    
+    
     const D3D12_VIEWPORT viewport{
         0.0f, 0.0f, static_cast<float>(m_viewportWidth), static_cast<float>(m_viewportHeight), 0.0f, 1.0f};
     const D3D12_RECT scissor{0, 0, static_cast<LONG>(m_viewportWidth), static_cast<LONG>(m_viewportHeight)};
@@ -391,7 +456,8 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
             m_gbuffer.Color(GBuffer::Albedo).SRV(),
             m_gbuffer.Color(GBuffer::Normal).SRV(),
             m_gbuffer.Color(GBuffer::Material).SRV(),
-            m_gbuffer.Depth().SRV());
+            m_gbuffer.Depth().SRV(),
+            m_shadowMap.SRV());
 
         m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }

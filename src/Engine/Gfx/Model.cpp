@@ -132,4 +132,17 @@ void Model::Draw(ID3D12GraphicsCommandList* commandList, GeometryPipeline& pipel
     }
 }
 
+void Model::DrawDepthOnly(ID3D12GraphicsCommandList* commandList) const
+{
+    if (!commandList) {
+        return;
+    }
+    
+    m_mesh.Bind(commandList);
+    
+    for (const summer::assets::SubMesh& subMesh : m_subMeshes) {
+        m_mesh.DrawSubMesh(commandList, subMesh.indexOffset, subMesh.indexCount);
+    }
+}
+
 } // namespace summer::gfx

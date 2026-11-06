@@ -28,7 +28,8 @@ $shaders = @(
     @{ Name = "FullscreenVS"; Type = "vs_6_0" },
     @{ Name = "DeferredLightingPS"; Type = "ps_6_0" },
     @{ Name = "TonemapPS"; Type = "ps_6_0" },
-    @{ Name = "DebugViewPS"; Type = "ps_6_0" }
+    @{ Name = "DebugViewPS"; Type = "ps_6_0" },
+    @{ Name = "ShadowVS"; Type = "vs_6_0"}
 )
 
 foreach ($shader in $shaders) {
