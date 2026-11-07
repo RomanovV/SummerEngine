@@ -648,14 +648,18 @@ Phases stack; later work should not rewrite the deferred frame graph unless the 
 ### Next
 
 - **Shadow improvements** — stable cascade projections and texel snapping, cascade blending, caster
-  coverage and per-cascade bias; spot/point shadows later.
+  coverage and per-cascade bias; spot/point shadows later. Add a far-shadow strategy for geometry beyond
+  the near CSM range. Evaluate a lower-resolution distant cascade or clipmap first, and compare static
+  baked/cached shadows or distance-field methods as scene and streaming requirements become clearer.
+  Define transitions and coverage between near and far shadows, especially for moving objects.
 - **Phase 5 — Many lights** — CPU tile lists, then compute tiled/clustered cull, then bindless
   (SM6.6). First compute/UAV work; lighting shader consumes the lists.
 - **Phase 6 — Instancing** — depends only on Phase 1; useful before foliage.
 - **Phase 7 — Foliage** — alpha test in the **G-buffer** pass (not blending).
-- **Phase 8 — Translucency** — forward pass **after** deferred+tonemap, using `PbrPipeline`.
+- **Phase 8 — Translucency** — forward HDR pass after deferred lighting and before tonemapping, using `PbrPipeline` as a starting point.
 - **Phase 9 — Volumetric fog** — after shadows; reuses Phase 5 compute.
 - **Phase 10 — GPU particles** — compute sim + transparent pass.
+
 
 ```
 Phase 0–1 ─→ Phase 2 PBR(fwd) ─→ Phase 3 Deferred ─→ Phase 4 Shadows ─┬─→ Phase 5 culling/bindless
@@ -665,6 +669,61 @@ Phase 0–1 ─→ Phase 2 PBR(fwd) ─→ Phase 3 Deferred ─→ Phase 4 Shado
 ```
 
 Keep the forward PSO for translucency. Do not put blending into the G-buffer.
+
+### Rendering research and longer-term goals
+
+These are planned experiments, not features in the current renderer. The order is provisional and
+depends on the resource, debugging, and temporal systems each experiment needs.
+
+**Geometry and landscape**
+
+- **Nanite-inspired micropolygon rasterizer** — research clustered geometry, hierarchical LOD and
+  culling, visibility/coverage rasterization, and material resolve into the existing deferred pipeline.
+  Start with an inspectable prototype and compare hardware rasterization with a compute/software path;
+  later investigate compression, streaming, occlusion, and GPU-driven work generation. This is a learning
+  goal, not a claim of Nanite feature parity.
+- **Landscape system** — build a terrain representation and authoring/import path, with tiled or
+  clipmap-based LOD, material blending, large-world streaming, and shadow integration. Evaluate whether
+  landscape geometry should feed the cluster rasterizer or use a separate terrain path.
+
+**Shadowing and ambient occlusion**
+
+- **Sparse virtual shadow maps** — investigate virtual pages, demand tracking, physical page allocation,
+  caching/invalidation, and directional clipmaps or equivalent coverage. Integrate with GPU-driven
+  geometry and moving lights/casters; compare memory, update cost, bias, and filtering with the existing
+  CSM path. Keep conventional shadow maps as a baseline and fallback while experimenting.
+- **Far shadows** — extend directional coverage beyond near cascades for landscape and distant meshes;
+  evaluate conventional distant cascades, clipmaps, cached/static data, and distance fields against the
+  virtual-shadow-map work. The method is an open design decision, with overlap and temporal stability
+  to validate in a large test scene.
+- **Contact shadows** — add short screen-space depth rays near the receiver to recover fine contact
+  detail missing from shadow maps. Account for depth thickness, bias, temporal stability, and geometry
+  outside the screen; combine with the main directional shadow rather than replacing it.
+- **Screen-space shadows** — research longer-range screen-space depth ray marching and its interaction
+  with directional and local lights. Distinguish it from short contact shadows and evaluate cost,
+  occlusion thickness, edge artifacts, and missing off-screen occluders.
+- **Screen-space ambient occlusion (SSAO)** — use G-buffer depth and normals to estimate local ambient
+  occlusion; investigate a baseline kernel, depth-aware denoising, temporal accumulation, and debug
+  views. Apply it to the ambient/indirect term with material occlusion in mind, not direct sunlight.
+
+**AMD FSR SDK integration**
+
+Treat SDK effects as independently scheduled features. AMD's [FSR SDK overview](https://gpuopen.com/amd-fsr-sdk/)
+lists FSR Upscaling 4.1 separately from Frame Generation, Ray Regeneration, and the Radiance Caching
+technical preview. Recheck the SDK version, licensing, supported hardware, required inputs, and fallback
+paths at implementation time.
+
+- **FSR Upscaling 4.1** — plan render/output resolution handling, jittered camera projection, motion
+  vectors, depth, exposure, reactive/transparency inputs where required, history reset, and a supported
+  fallback. Compare image quality and frame time against native resolution.
+- **FSR Frame Generation** — integrate separately once suitable motion/depth inputs are available;
+  evaluate the SDK's presentation/swapchain integration, frame pacing, latency, UI composition, and
+  reset behavior. Generated frames must not be confused with simulation frames.
+- **FSR Ray Regeneration** — investigate only when a ray-tracing path and its required inputs exist;
+  plan denoising/reconstruction, motion and history inputs, and a fallback for unsupported hardware.
+- **FSR Radiance Caching** — research separately as an optional technical-preview experiment after an
+  appropriate ray-traced lighting path exists; validate availability and requirements before committing
+  to integration.
 
 ---
 

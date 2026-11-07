@@ -1,4 +1,5 @@
 #include "Assets/Image.h"
+#include "Assets/ModelLoader.h"
 #include "Assets/Primitives.h"
 #include "Core/Log.h"
 #include "Core/Paths.h"
@@ -15,6 +16,7 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <string>
 
 using namespace DirectX;
@@ -104,12 +106,78 @@ int main() {
         AddInstance(scene, helmetModel, {0.0f, 0.0f, 0.0f}, 6.0f, XM_PI);
     }
     AddInstance(scene, cubeModel, {-3.5f, 0.75f, 1.5f}, 0.75f);
-    AddInstance(scene, cubeModel, {3.0f, 0.5f, -2.0f}, 0.5f);
-    AddInstance(scene, cubeModel, {3.2f, 1.0f, 2.4f}, 1.0f);
+    AddInstance(scene, cubeModel, {-4.5f, 0.5f, -2.0f}, 0.5f);
+    AddInstance(scene, cubeModel, {-2.5f, 1.0f, -3.5f}, 1.0f);
+
+    // Columns vary material type/albedo; rows vary perceptual roughness (near to far).
+    struct MaterialSample {
+        DirectX::XMFLOAT3 baseColor; // linear RGB
+        float metallic;
+    };
+    const std::array<MaterialSample, 4> materialColumns{{
+        {{0.18f, 0.18f, 0.18f}, 0.0f}, // neutral dielectric
+        {{0.95f, 0.95f, 0.95f}, 0.0f}, // white dielectric
+        {{0.95f, 0.93f, 0.88f}, 1.0f}, // silver-colored metal
+        {{0.95f, 0.64f, 0.54f}, 1.0f}, // copper-colored metal
+    }};
+    constexpr std::array<float, 4> materialRoughness{{0.05f, 0.25f, 0.5f, 0.9f}};
+    constexpr float ballScale = 0.10f;
+    constexpr float ballBaseHeight = 7.715353f * ballScale;
+
+    summer::assets::MeshData materialBallMesh;
+    if (!summer::assets::ModelLoader::LoadFromFile(
+            summer::Paths::Resolve("assets/models/3dMaterialBall.obj"), materialBallMesh)) {
+        spdlog::warn("Material ball not loaded; continuing without the material grid");
+    } else {
+        // White in every channel keeps the shader's texture * factor terms neutral, including metallic.
+        summer::gfx::Texture2D* neutralMaterialTexture = renderer.CreateTexture(
+            summer::assets::Image::MakeSolid(0xFFFFFFFFu), /*srgb=*/false);
+        if (!neutralMaterialTexture) {
+            spdlog::error("Could not create the material grid's neutral texture");
+        } else {
+            // AO is data: load once in linear space and share it across all material samples.
+            summer::assets::Image aoImage;
+            summer::gfx::Texture2D* materialBallAo = nullptr;
+            if (summer::assets::Image::LoadFromFile(
+                    summer::Paths::Resolve("assets/models/3dMaterialBall_AO.png"), aoImage)) {
+                materialBallAo = renderer.CreateTexture(aoImage, /*srgb=*/false);
+            }
+            if (!materialBallAo) {
+                spdlog::warn("Material ball AO unavailable; using unoccluded materials");
+            }
+            for (size_t row = 0; row < materialRoughness.size(); ++row) {
+                for (size_t column = 0; column < materialColumns.size(); ++column) {
+                    // Models currently own their meshes and materials; each sample needs its own model.
+                    summer::gfx::Model* ball = renderer.CreateModel(materialBallMesh);
+                    if (!ball) {
+                        spdlog::error("Could not create material ball at row {}, column {}", row, column);
+                        continue;
+                    }
+                    const MaterialSample& sample = materialColumns[column];
+                    for (summer::gfx::Material& material : ball->Materials()) {
+                        material.baseColor = neutralMaterialTexture;
+                        material.metalRough = neutralMaterialTexture;
+                        material.baseColorFactor = {sample.baseColor.x, sample.baseColor.y, sample.baseColor.z, 1.0f};
+                        material.metallicFactor = sample.metallic;
+                        material.roughnessFactor = materialRoughness[row];
+                        material.normalScale = 0.0f;
+                        if (materialBallAo) {
+                            material.occlusion = materialBallAo;
+                        }
+                        material.occlusionStrength = materialBallAo ? 1.0f : 0.0f;
+                        material.emissiveFactor = {0.0f, 0.0f, 0.0f};
+                    }
+                    const float x = 2.8f + static_cast<float>(column) * 1.45f;
+                    const float z = 5.5f - static_cast<float>(row) * 2.5f;
+                    AddInstance(scene, ball, {x, ballBaseHeight, z}, ballScale, XM_PI);
+                }
+            }
+        }
+    }
 
     summer::scene::Camera& camera = scene.GetCamera();
-    camera.SetTarget({0.0f, 1.4f, 0.0f});
-    camera.SetDistance(8.0f);
+    camera.SetTarget({2.4f, 1.2f, 1.5f});
+    camera.SetDistance(18.0f);
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
     window.GetCursorPosition(lastMouseX, lastMouseY);
@@ -342,6 +410,12 @@ int main() {
             for (uint32_t i = 0; i < shadow.GetActiveCascadeCount(); ++i) {
                 ImGui::Text("Cascade %u: %.3f - %.3f", static_cast<unsigned int>(i), splits[i], splits[i + 1]);
             }
+        }
+
+        if (ImGui::CollapsingHeader("PBR Material Grid")) {
+            ImGui::TextUnformatted("Columns (+X): gray dielectric, white dielectric, silver, copper");
+            ImGui::TextUnformatted("Rows (near to far): roughness 0.05, 0.25, 0.50, 0.90");
+            ImGui::TextUnformatted("Metallic: 0 for dielectrics, 1 for metals. Albedo values are linear.");
         }
 
         if (helmetModel && ImGui::CollapsingHeader("Helmet Materials")) {

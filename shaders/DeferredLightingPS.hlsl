@@ -137,8 +137,9 @@ float4 main(PSInput input) : SV_Target {
         color += BRDF(N, V, L, radiance, albedo, metallic, roughness);
     }
 
+    // Material AO approximates indirect occlusion; direct-light visibility comes from shadows.
     float3 ambientTerm = ambient * albedo * occlusion;
-    float3 finalColor = color * occlusion + ambientTerm + emissive;
+    float3 finalColor = color + ambientTerm + emissive;
     if (cascadeDebug.y != 0u && cascadeIndex < cascadeDebug.x)
     {
         finalColor *= lerp(float3(1.0f, 1.0f, 1.0f), kCascadeColors[cascadeIndex], 0.65f);
