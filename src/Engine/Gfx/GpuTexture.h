@@ -8,7 +8,7 @@ namespace summer::gfx {
 
 // Owns a committed 2D texture or array and tracks its whole-resource state, so callers can
 // request a transition without hand-tracking barriers. This is the building block composed by
-// RenderTarget and DepthStencil (and later G-buffer attachments / shadow maps).
+// RenderTarget, DepthStencil, and ShadowMapArray.
 class GpuTexture {
 public:
     struct Desc {

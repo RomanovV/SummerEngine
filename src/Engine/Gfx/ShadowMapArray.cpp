@@ -1,6 +1,7 @@
 #include "Gfx/ShadowMapArray.h"
 
 #include <cassert>
+#include <spdlog/spdlog.h>
 
 namespace summer::gfx {
 
@@ -32,12 +33,14 @@ bool ShadowMapArray::Initialize(
     }
     for (uint32_t i = 0; i < kMaxCascades; ++i) {
         if (!m_dsvs[i].CreateTexture2DArraySlice(device, dsvHeap, m_texture.Resource(), DXGI_FORMAT_D32_FLOAT, i)) {
+            spdlog::error("Shadow map array: could not create DSV for cascade {}", i);
             Shutdown();
             return false;
         }
     }
     if (!m_srv.CreateTexture2DArray(device, srvHeap, m_texture.Resource(), DXGI_FORMAT_R32_FLOAT,
                                     0, kMaxCascades)) {
+        spdlog::error("Shadow map array: could not create array SRV");
         Shutdown();
         return false;
     }
@@ -57,8 +60,12 @@ void ShadowMapArray::TransitionTo(ID3D12GraphicsCommandList* commandList, D3D12_
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE ShadowMapArray::DSV(uint32_t slice) const {
-    assert(slice < kMaxCascades);
-    return slice < kMaxCascades ? m_dsvs[slice].Cpu() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    if (slice >= kMaxCascades) {
+        spdlog::error("Shadow map array: requested DSV slice {} exceeds capacity {}", slice, kMaxCascades);
+        assert(false && "Shadow map array slice out of range");
+        return {};
+    }
+    return m_dsvs[slice].Cpu();
 }
 
 } // namespace summer::gfx

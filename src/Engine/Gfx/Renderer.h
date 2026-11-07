@@ -86,7 +86,7 @@ public:
     void OnResize(uint32_t width, uint32_t height);
 
     void BeginImGuiFrame();
-    // Geometry into the G-buffer, deferred lighting into HDR, then tonemap + ImGui.
+    // Cascaded shadow depth, G-buffer geometry, deferred HDR lighting, tonemap, and ImGui.
     void RenderFrame(const summer::scene::Scene& scene);
 
     // --- Lighting / tonemap controls (for the UI) ---
@@ -169,6 +169,7 @@ private:
     float m_clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     uint32_t m_viewportWidth = 0;
     uint32_t m_viewportHeight = 0;
+    bool m_invalidLightDirectionWarned = false;
     bool m_initialized = false;
 };
 

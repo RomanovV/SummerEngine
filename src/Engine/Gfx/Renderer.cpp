@@ -26,7 +26,7 @@ constexpr const char* kShadowVsRelative = "shaders/ShadowVS.cso";
 
 // Shared CBV/SRV/UAV heap size: ImGui font(s) + engine textures + HDR SRV. Grow as content grows.
 constexpr uint32_t kSrvHeapCapacity = 1024;
-// CPU-only pools for offscreen render/depth targets (HDR, future G-buffer, shadow maps, post-proc).
+// CPU-only pools for HDR, G-buffer, and cascade depth views.
 constexpr uint32_t kRtvHeapCapacity = 64;
 constexpr uint32_t kDsvHeapCapacity = 16;
     
@@ -70,7 +70,12 @@ std::array<float, kMaxCascades + 1> Renderer::CalculateCascadeSplits(const summe
     float cameraFar = camera.GetFarZ();
     
     
-    assert(std::isfinite(cameraNear) && std::isfinite(cameraFar) && cameraNear > 0.0f && cameraNear < cameraFar);
+#if defined(SUMMER_DEBUG)
+    if (!(std::isfinite(cameraNear) && std::isfinite(cameraFar) && cameraNear > 0.0f && cameraNear < cameraFar)) {
+        spdlog::critical("Cascade splits: invalid camera depth range (near={}, far={})", cameraNear, cameraFar);
+        assert(false && "Invalid camera depth range for cascade splits");
+    }
+#endif
 
     uint32_t activeCount = m_shadow.GetActiveCascadeCount();
     // Keep a positive shadow range, even for a very narrow camera range.
@@ -136,7 +141,14 @@ CascadeFit Renderer::CalculateCascadeFit(const std::array<DirectX::XMFLOAT3, 8>&
     DirectX::XMVECTOR direction = DirectX::XMLoadFloat3(&lightDirection);
     const float directionLengthSq =
         DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(direction));
-    assert(casterDepthMargin >= 0.0f && directionLengthSq > 1e-8f);
+#if defined(SUMMER_DEBUG)
+    if (!(std::isfinite(casterDepthMargin) && casterDepthMargin >= 0.0f &&
+          std::isfinite(directionLengthSq) && directionLengthSq > 1e-8f)) {
+        spdlog::critical("Cascade fit: invalid input (caster margin={}, light direction=({}, {}, {}), length squared={})",
+                         casterDepthMargin, lightDirection.x, lightDirection.y, lightDirection.z, directionLengthSq);
+        assert(false && "Invalid input to cascade fit");
+    }
+#endif
     direction = DirectX::XMVector3Normalize(direction);
     
     // Calculate Radius (max world dist corner-center)
@@ -180,11 +192,16 @@ CascadeFit Renderer::CalculateCascadeFit(const std::array<DirectX::XMFLOAT3, 8>&
     fit.minBounds.z -= casterDepthMargin;
 
 #if defined(SUMMER_DEBUG)
-    assert(std::isfinite(fit.minBounds.x) && std::isfinite(fit.minBounds.y) &&
-           std::isfinite(fit.minBounds.z) && std::isfinite(fit.maxBounds.x) &&
-           std::isfinite(fit.maxBounds.y) && std::isfinite(fit.maxBounds.z));
-    assert(fit.minBounds.x < fit.maxBounds.x && fit.minBounds.y < fit.maxBounds.y &&
-           fit.minBounds.z < fit.maxBounds.z);
+    if (!(std::isfinite(fit.minBounds.x) && std::isfinite(fit.minBounds.y) &&
+          std::isfinite(fit.minBounds.z) && std::isfinite(fit.maxBounds.x) &&
+          std::isfinite(fit.maxBounds.y) && std::isfinite(fit.maxBounds.z) &&
+          fit.minBounds.x < fit.maxBounds.x && fit.minBounds.y < fit.maxBounds.y &&
+          fit.minBounds.z < fit.maxBounds.z)) {
+        spdlog::critical("Cascade fit: invalid light-space bounds min=({}, {}, {}), max=({}, {}, {})",
+                         fit.minBounds.x, fit.minBounds.y, fit.minBounds.z,
+                         fit.maxBounds.x, fit.maxBounds.y, fit.maxBounds.z);
+        assert(false && "Invalid cascade light-space bounds");
+    }
 #endif
 
     auto lightProjection = DirectX::XMMatrixOrthographicOffCenterLH(
@@ -286,7 +303,7 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
     m_lighting.points[1] = {{-3.0f, 2.0f, -2.0f}, 20.0f, {0.4f, 0.6f, 1.0f}, 30.0f};
 
     m_initialized = true;
-    spdlog::info("Renderer initialized (deferred PBR + HDR tonemap)");
+    spdlog::info("Renderer initialized (deferred PBR, cascaded shadows, HDR tonemap)");
     return true;
 }
 
@@ -357,6 +374,7 @@ void Renderer::Shutdown() {
     m_srvHeap.Shutdown();
     m_swapChain.Shutdown();
     m_device.Shutdown();
+    m_invalidLightDirectionWarned = false;
     m_initialized = false;
 }
 
@@ -491,8 +509,15 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     DirectX::XMVECTOR dir = DirectX::XMLoadFloat3(&m_lighting.directional.direction);
     const float directionLengthSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(dir));
     if (!std::isfinite(directionLengthSq) || directionLengthSq <= 1e-8f) {
+        if (!m_invalidLightDirectionWarned) {
+            const auto& invalidDirection = m_lighting.directional.direction;
+            spdlog::warn("Invalid directional light ({}, {}, {}); using downward fallback until it becomes valid",
+                         invalidDirection.x, invalidDirection.y, invalidDirection.z);
+            m_invalidLightDirectionWarned = true;
+        }
         dir = DirectX::XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
     } else {
+        m_invalidLightDirectionWarned = false;
         dir = DirectX::XMVector3Normalize(dir);
     }
     DirectX::XMFLOAT3 lightDirection;
@@ -515,10 +540,15 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
                 DirectX::XMLoadFloat3(&corner), cascadeViewProj);
             DirectX::XMFLOAT3 position;
             DirectX::XMStoreFloat3(&position, ndc);
-            assert(std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z));
-            assert(position.x >= -1.0f - kNdcTolerance && position.x <= 1.0f + kNdcTolerance);
-            assert(position.y >= -1.0f - kNdcTolerance && position.y <= 1.0f + kNdcTolerance);
-            assert(position.z >= -kNdcTolerance && position.z <= 1.0f + kNdcTolerance);
+            if (!(std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z) &&
+                  position.x >= -1.0f - kNdcTolerance && position.x <= 1.0f + kNdcTolerance &&
+                  position.y >= -1.0f - kNdcTolerance && position.y <= 1.0f + kNdcTolerance &&
+                  position.z >= -kNdcTolerance && position.z <= 1.0f + kNdcTolerance)) {
+                spdlog::critical("Cascade {}: frustum corner ({}, {}, {}) projected outside NDC: ({}, {}, {}), splits=[{}, {}]",
+                                 i, corner.x, corner.y, corner.z, position.x, position.y, position.z,
+                                 cascadeSplits[i], cascadeSplits[i + 1]);
+                assert(false && "Cascade frustum corner outside light projection");
+            }
         }
 #endif
         

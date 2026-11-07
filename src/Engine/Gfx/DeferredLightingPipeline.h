@@ -10,9 +10,10 @@ class Device;
 
 // Fullscreen deferred lighting: samples the G-buffer + depth and writes linear HDR radiance.
 // Bindings:
-//   t0..t4  four SRV tables  - albedo, normal, material, depth, shadow map
-//   b1      CBV              - FrameConstants (camera + lights + invViewProj)
-//   s0      static sampler   - point, clamp
+//   t0..t4  five SRV tables - albedo, normal, material, depth, shadow array
+//   b1      CBV             - FrameConstants (camera, lights, cascade splits and matrices)
+//   s0      static sampler  - point, clamp for G-buffer reads
+//   s1      comparison sampler - filtered shadow depth lookups
 class DeferredLightingPipeline {
 public:
     DeferredLightingPipeline() = default;

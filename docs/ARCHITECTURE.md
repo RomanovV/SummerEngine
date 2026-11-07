@@ -2,10 +2,10 @@
 
 > Sandbox rendering engine for learning and experimenting with D3D12, shaders, and rendering techniques.
 >
-> **Current frame path (Phase 4, directional shadows):** a depth-only **shadow pass** renders the scene
-> from the sun's point of view → opaque geometry writes a G-buffer → fullscreen deferred lighting
-> (sun term shadowed with a PCF shadow map) writes linear HDR → tonemap to the swapchain. A **View**
-> menu can replace or overlay that resolve with G-buffer and shadow-map debug visualization.
+> **Current frame path (Phase 4, cascaded directional shadows):** a depth-only pass renders each active
+> cascade into a texture-array slice → opaque geometry writes a G-buffer → deferred PBR lighting selects
+> a cascade and applies PCF shadows to the sun term in linear HDR → tonemap to the swapchain. The View
+> menu includes G-buffer channels, cascade-colored lighting, and individual cascade depth slices.
 >
 > The forward `PbrPipeline` is still **created** (HDR + a dedicated depth buffer) but is **not used**
 > in `RenderFrame`. It stays for Phase 8 translucency. Do not treat it as the live opaque path.
@@ -76,7 +76,7 @@ graph TB
             GBuffer["GBuffer"]
             Geometry["GeometryPipeline"]
             Shadow["ShadowPipeline"]
-            ShadowMap["DepthStencil m_shadowMap"]
+            ShadowMap["ShadowMapArray m_cascadeShadowMaps"]
             Deferred["DeferredLightingPipeline"]
             Tonemap["TonemapPipeline"]
             DebugView["DebugViewPipeline"]
@@ -126,7 +126,7 @@ graph TB
 | Namespace | Modules | Purpose |
 |---|---|---|
 | `summer::` | `Log`, `Paths`, `Window` | Platform utilities |
-| `summer::gfx::` | Device, SwapChain, Renderer, ImGuiLayer, descriptor heaps/views, GpuTexture, RenderTarget, DepthStencil, GBuffer, GeometryPipeline, ShadowPipeline, DeferredLightingPipeline, PbrPipeline, TonemapPipeline, DebugViewPipeline, ConstantBuffer, GpuMesh, Buffer, Texture2D, Material, Model, GpuCapture, plus `Lighting.h` and `DebugView.h` | D3D12 rendering |
+| `summer::gfx::` | Device, SwapChain, Renderer, ImGuiLayer, descriptor heaps/views, GpuTexture, RenderTarget, DepthStencil, ShadowMapArray, GBuffer, GeometryPipeline, ShadowPipeline, DeferredLightingPipeline, PbrPipeline, TonemapPipeline, DebugViewPipeline, ConstantBuffer, GpuMesh, Buffer, Texture2D, Material, Model, GpuCapture, plus `Lighting.h` and `DebugView.h` | D3D12 rendering |
 | `summer::assets::` | MeshData, MaterialData, ModelLoader, Image, Primitives | CPU geometry / images |
 | `summer::scene::` | Scene, Entity, Camera | Draw list + orbit camera |
 
@@ -150,7 +150,7 @@ Startup in `Sandbox/main.cpp`:
    ├── GBuffer                        3 color RTs + sampleable depth (typeless + DSV + SRV)
    ├── default PBR Texture2Ds
    ├── ConstantBuffer                 FrameConstants × FrameCount
-   ├── DepthStencil m_shadowMap       2048², D32 (typeless + DSV + SRV), fixed size
+   ├── ShadowMapArray                 8 × 2048², typeless depth, per-slice DSV + array SRV
    ├── PbrPipeline                    unused in RenderFrame
    ├── GeometryPipeline               PbrVS + GBufferPS, G-buffer RTV/DSV formats
    ├── DeferredLightingPipeline       FullscreenVS + DeferredLightingPS → HDR
@@ -195,18 +195,21 @@ sequenceDiagram
 
         Rnd->>SC: back buffer index
         Rnd->>Dev: WaitForBackBuffer, reset allocator + list
-        Rnd->>Rnd: Update FrameConstants (viewProj, invViewProj, lightViewProj, shadowParams, camera, lights)
+        Rnd->>Rnd: Update FrameConstants (camera, lights, cascade splits and matrices, shadowParams)
         Rnd->>Rnd: SetDescriptorHeaps(shared SRV heap)
 
-        Note over Rnd: Pass 0 — shadow map (depth only, sun's point of view)
-        Rnd->>Rnd: shadow map → DEPTH_WRITE, shadow viewport/scissor, clear, draw entities (ShadowPipeline)
-        Rnd->>Rnd: shadow map → PIXEL_SHADER_RESOURCE, restore window viewport
+        Note over Rnd: Pass 0 — cascaded shadow depth (sun's point of view)
+        Rnd->>Rnd: shadow array → DEPTH_WRITE
+        loop Each active cascade
+            Rnd->>Rnd: bind slice DSV, clear depth, set light matrix, draw entities
+        end
+        Rnd->>Rnd: shadow array → PIXEL_SHADER_RESOURCE, restore window viewport
 
         Note over Rnd: Pass 1 — geometry → G-buffer
         Rnd->>Rnd: colors → RENDER_TARGET, depth → DEPTH_WRITE, clear, draw entities
         Rnd->>Rnd: colors + depth → PIXEL_SHADER_RESOURCE
 
-        alt Lit or Overview
+        alt Lit, Overview, or Cascade Ranges
             Note over Rnd: Pass 2 — lighting → HDR
             Rnd->>Rnd: HDR → RENDER_TARGET, DeferredLightingPipeline.Draw
             Rnd->>Rnd: HDR → PIXEL_SHADER_RESOURCE
@@ -214,12 +217,12 @@ sequenceDiagram
 
         Note over Rnd: Pass 3 — backbuffer
         Rnd->>Rnd: PRESENT → RENDER_TARGET, clear
-        alt Lit or Overview
+        alt Lit, Overview, or Cascade Ranges
             Rnd->>Rnd: TonemapPipeline.Draw (full viewport)
         end
         alt Overview
             Rnd->>Rnd: DebugView tiles on the 5×5 frame
-        else single G-buffer view
+        else single G-buffer or shadow-map view
             Rnd->>Rnd: DebugViewPipeline full screen (no lighting/tonemap)
         end
         Rnd->>UI: RenderDrawData
@@ -235,7 +238,7 @@ Geometry (and the unused forward PBR PSO) share this layout:
 - **Per-object (`b0`):** `model` + `normalMatrix` as **32-bit root constants**. A mapped CB would show
   only the last write of the frame; root constants keep multi-entity draws correct.
 - **Per-frame (`b1`):** `FrameConstants` in a mapped `ConstantBuffer` (one 256-byte-aligned slot per
-  frame-in-flight). Camera, lights, `viewProj`, `invViewProj`, `lightViewProj`, and `shadowParams`.
+  frame-in-flight). Camera, lights, `viewProj`, `invViewProj`, `view`, cascade splits, light matrices, and `shadowParams`.
   New fields are always **appended at the end**, so the VS/forward shaders that declare only a prefix
   of the cbuffer stay valid.
 - **Per-material (`b2`):** factors as root constants (base color / emissive / metallic / roughness /
@@ -244,12 +247,12 @@ Geometry (and the unused forward PBR PSO) share this layout:
 `normalMatrix` is uploaded as `inverse(world)`. HLSL reads it column-major, which yields
 `transpose(inverse(world))` — the correct normal transform under non-uniform scale.
 
-`invViewProj` and `lightViewProj` are stored the same way as `viewProj` (`XMMatrixTranspose` of the CPU
+`invViewProj`, `view`, and cascade light matrices are stored the same way as `viewProj` (`XMMatrixTranspose` of the CPU
 matrix) so `mul(vector, matrix)` in HLSL matches. Every matrix you upload follows this convention.
 
 The shadow pass does **not** read `FrameConstants`. It takes the model matrix (`b0`, 16 DWORDs) and
 `lightViewProj` (`b1`, 16 DWORDs) as root constants, because root constants are recorded into the
-command list and can change between draws (needed once cascades loop over several light matrices).
+command list and change between cascade draws.
 
 ### Where to hook experiments
 
@@ -261,7 +264,7 @@ command list and can change between draws (needed once cascades loop over severa
 | Lighting / BRDF | `shaders/DeferredLightingPS.hlsl` + `shaders/PbrCommon.hlsli` |
 | Shadow pass, light matrix | `Renderer::RenderFrame()` (top), `Gfx/ShadowPipeline.*`, `shaders/ShadowVS.hlsl` |
 | Shadow sampling, PCF, bias | `DirectionalShadow()` in `shaders/DeferredLightingPS.hlsl` |
-| Shadow tuning (box, bias) | `ShadowSettings` in `Gfx/Renderer.h`, the Shadows panel in `Sandbox/main.cpp` |
+| Shadow tuning (splits, distance, bias) | `ShadowSettings` in `Gfx/Renderer.h`, the Shadows panel in `Sandbox/main.cpp` |
 | Debug visualization | `Gfx/DebugView.h`, `DebugViewPipeline`, `shaders/DebugViewPS.hlsl` |
 | Forward / translucency later | `Gfx/PbrPipeline` + `shaders/PbrPS.hlsl` |
 | Mesh import | `Assets/ModelLoader` |
@@ -306,11 +309,11 @@ graph LR
     Renderer --> RtvHeap["CpuDescriptorHeap RTV"]
     Renderer --> DsvHeap["CpuDescriptorHeap DSV"]
     Renderer --> GBuffer
-    Renderer --> ShadowMapNode["DepthStencil shadow map"]
+    Renderer --> ShadowMapNode["ShadowMapArray: cascade depth slices"]
     Renderer --> HDR["HDR RenderTarget"]
     Renderer --> Pipelines["Geometry / Shadow / Deferred / Tonemap / DebugView / Pbr"]
     Renderer --> FrameCB["ConstantBuffer"]
-    ShadowMapNode -.DSV.-> DsvHeap
+    ShadowMapNode -."one DSV per slice".-> DsvHeap
     ShadowMapNode -.SRV.-> SrvHeap
     GBuffer -.RTVs.-> RtvHeap
     GBuffer -.DSV.-> DsvHeap
@@ -332,7 +335,7 @@ It does not inherit `RenderTarget`.
 | Buffer | Sampleable? | Used in `RenderFrame`? | Why it exists |
 |---|---|---|---|
 | `GBuffer::Depth` | Yes (`R32_TYPELESS` → DSV `D32_FLOAT` + SRV `R32_FLOAT`) | **Yes** — geometry depth test + lighting/debug SRV | Deferred path |
-| `Renderer::m_shadowMap` | Yes (`R32_TYPELESS` → DSV `D32_FLOAT` + SRV `R32_FLOAT`) | **Yes** — shadow pass depth write, lighting + debug SRV | Directional shadow map; fixed `kShadowMapSize`, **not** resized with the window |
+| `Renderer::m_cascadeShadowMaps` | Yes (`R32_TYPELESS` array → per-slice DSV `D32_FLOAT` + array SRV `R32_FLOAT`) | **Yes** — cascade depth writes, lighting and debug SRV | Eight fixed-size slices; active count 1–8; not resized with the window |
 | `Renderer::m_depth` | No | **No** | Still created so `PbrPipeline` can initialize with a DSV format |
 
 Swapchain has **no** depth. Do not add another screen-sized one.
@@ -342,8 +345,9 @@ Swapchain has **no** depth. Do not add another screen-sized one.
 - **`FrameCount = 2`**
 - **`kSrvHeapCapacity = 1024`** — ImGui, engine textures, HDR SRV, G-buffer SRVs, shadow-map SRV
 - **`kRtvHeapCapacity = 64` / `kDsvHeapCapacity = 16`** — HDR + G-buffer colors + G-buffer depth,
-  `m_depth`, and the shadow map
-- **`kShadowMapSize = 2048`** — shadow map resolution (a quality setting, independent of the window)
+  `m_depth`, and eight cascade DSVs
+- **`kShadowMapSize = 2048`** — resolution per cascade, independent of the window
+- **`kMaxCascades = 8`** — fixed array capacity; default active count is four
 
 ---
 
@@ -370,8 +374,8 @@ PSO: 3 G-buffer color RTVs + G-buffer depth. VS = `PbrVS`, PS = `GBufferPS`.
 
 | Slot | Binding | Purpose |
 |---|---|---|
-| 0–4 | SRV tables `t0`–`t4` | albedo, normal, material, depth, **shadow map** |
-| 5 | CBV `b1` | FrameConstants (needs `invViewProj`, `lightViewProj`, `shadowParams`) |
+| 0–4 | SRV tables `t0`–`t4` | albedo, normal, material, depth, **shadow depth array** |
+| 5 | CBV `b1` | FrameConstants (camera view, inverse view-projection, cascade splits and matrices, shadow parameters) |
 | static `s0` | point, clamp | G-buffer reads |
 | static `s1` | **comparison**, linear, border (opaque white), `LESS_EQUAL` | shadow lookups |
 
@@ -401,8 +405,8 @@ comes from the vertex buffer view, so a subset layout is valid). Rasterizer stat
 
 | Slot | Binding | Purpose |
 |---|---|---|
-| 0–4 | SRV tables `t0`–`t4` | G-buffer as lighting, plus the shadow map |
-| 5 | 32-bit constants `b0` | visualization mode |
+| 0–4 | SRV tables `t0`–`t4` | G-buffer as lighting, plus the shadow depth array |
+| 5 | 32-bit constants `b0` | visualization mode and selected cascade slice |
 | static `s0` | point, clamp | |
 
 Every mode binds all five tables, because the pixel shader declares them all.
@@ -435,7 +439,7 @@ Global free-list pools. Resources borrow slots via RAII wrappers.
 |---|---|---|---|---|
 | SRV | `GpuDescriptorHeap` | Renderer | **Yes** | ImGui + textures + HDR SRV + G-buffer SRVs + shadow-map SRV |
 | RTV pool | `CpuDescriptorHeap` | Renderer | No | HDR + G-buffer colors |
-| DSV pool | `CpuDescriptorHeap` | Renderer | No | G-buffer depth + shadow map + unused `m_depth` |
+| DSV pool | `CpuDescriptorHeap` | Renderer | No | G-buffer depth + eight cascade DSVs + unused `m_depth` |
 | Back-buffer RTVs | local RTV heap | SwapChain | No | DXGI back buffers (recreated on resize) |
 
 Only **one** shader-visible CBV/SRV/UAV heap may be bound per command list. Everything that shaders
@@ -447,7 +451,7 @@ sample shares `GpuDescriptorHeap`. ImGui 1.92+ alloc/free callbacks go into that
 
 ```mermaid
 flowchart LR
-    S["Shadow pass → shadow map"] --> C
+    S["Shadow pass → cascade depth array"] --> C
     A["Geometry → G-buffer"] --> B["G-buffer SRVs"]
     B --> C["Deferred lighting → HDR"]
     C --> D["Tonemap → backbuffer"]
@@ -457,7 +461,7 @@ flowchart LR
     E --> F
 ```
 
-Lighting and debug both sample the same four G-buffer SRVs, plus the shadow map. Lighting is skipped
+Lighting and debug both sample the same four G-buffer SRVs, plus the shadow depth array. Lighting is skipped
 for a single-channel debug view.
 
 ### G-buffer layout
@@ -486,57 +490,45 @@ tonemap, and debug view.
 
 ---
 
-## Directional Shadows
+## Cascaded Directional Shadows
 
-A standard shadow map: render depth from the light, then compare each shaded pixel's light-space depth
-against it. Only the **directional BRDF term** is shadowed. Ambient, emissive, and point lights are
-not (point lights would need cube maps).
+`Renderer::CalculateCascadeSplits()` divides camera view-space depth from the camera near plane to the
+clamped shadow distance. The active count is 1–8 (default 4). The split blend interpolates between
+uniform and logarithmic distributions; the default lambda is 0.5. For boundary `i` of `N`:
 
-**Light camera.** A directional light has no position, so the Renderer invents one each frame:
-
-```
-eye   = center - normalize(direction) * distance
-view  = LookAtLH(eye, center, up)              // up = +Z if the sun is near-vertical, else +Y
-proj  = OrthographicLH(orthoSize, orthoSize, nearZ, farZ)
-lightViewProj = view * proj                    // uploaded transposed, like viewProj
+```cpp
+float t = float(i) / float(N);
+float uniformSplit = nearZ + (shadowDistance - nearZ) * t;
+float logSplit = nearZ * pow(shadowDistance / nearZ, t);
+float split = (1 - lambda) * uniformSplit + lambda * logSplit;
 ```
 
-`ShadowSettings` (in `Renderer.h`, edited live from the Shadows panel) holds `center`, `orthoSize`,
-`distance`, `nearZ`, `farZ`, `normalOffset`, and `depthBias`. The ortho box is also the shadow volume:
-anything outside it is treated as lit, and a larger box trades resolution for coverage.
+For each interval, `CalculateFrustumSliceCorners()` constructs eight camera-frustum corners and
+transforms them to world space. `CalculateCascadeFit()` fits an orthographic box in directional-light
+view space, extends its near depth by the fixed `kCasterDepthMargin = 10` world units, and produces a
+view-projection matrix. Debug builds validate finite, ordered bounds and verify that the eight receiver
+corners project inside D3D NDC; failures log context and assert.
 
-**Shadow pass** (top of `RenderFrame`, before the G-buffer pass):
+`ShadowMapArray` owns one 8-slice, 2048² `R32_TYPELESS` texture with eight `D32_FLOAT` DSVs and one
+`R32_FLOAT` array SRV. It costs roughly 128 MiB of depth texels, regardless of active count. A fixed
+resolution is independent of window size. The resource tracks one state for all subresources: transition
+the whole array to `DEPTH_WRITE`, clear and draw each active slice with its transposed light matrix as
+root constants, then transition the array to `PIXEL_SHADER_RESOURCE`.
 
-1. Transition the map to `DEPTH_WRITE`.
-2. Set the viewport and scissor to the map size (2048²), bind it as the only target (no RTVs), clear to 1.0.
-3. `ShadowPipeline`: bind, set `lightViewProj`, then per entity set the model matrix and call
-   `Model::DrawDepthOnly`.
-4. Transition to `PIXEL_SHADER_RESOURCE`. The window viewport is restored by the geometry pass setup.
+Deferred lighting reconstructs world position from G-buffer depth, selects the first cascade whose far
+split contains its camera view-space Z, and samples the corresponding slice of `Texture2DArray`.
+Nine comparison-sampler taps implement 3×3 PCF; the linear comparison sampler also filters each tap.
+`shadowParams` controls world-space normal offset, comparison depth bias, and inverse resolution.
+Rasterizer depth and slope-scaled bias are baked into `ShadowPipeline`. Only the directional BRDF term
+is shadowed; ambient, emissive, and point lights remain unshadowed. Beyond shadow distance pixels are lit.
 
-**Lookup** (`DirectionalShadow(worldPos, N)` in `DeferredLightingPS.hlsl`):
+The Shadows panel controls active count, shadow distance, split lambda, normal offset, comparison bias,
+and the slice shown by **View → Shadows → Shadow Map**. **Cascade Ranges** overlays the selected
+cascade color on lit geometry. The raw depth view stretches its square image to the viewport.
 
-1. Offset the point along its normal by `shadowParams.x`.
-2. Project with `lightViewProj`, divide by `w`, map NDC to UV with the Y flip (`v = 0.5 - y * 0.5`).
-3. Outside the map or beyond the far plane → lit.
-4. 3×3 PCF: nine `SampleCmpLevelZero` taps (`s1`, linear comparison, `LESS_EQUAL`) at one-texel spacing
-   (`shadowParams.z = 1 / mapSize`), reference depth `ndc.z - shadowParams.y`, averaged. The sampler
-   already blends a 2×2 group per tap, so the effective filter is wider than 3×3 texels.
-
-**Bias.** Self-shadowing (acne) is fought at three levels, from baked to live:
-
-| Level | Where | Notes |
-|---|---|---|
-| PSO `DepthBias` / `SlopeScaledDepthBias` | `ShadowPipeline.cpp` | Baked into the PSO; does most of the work in the sandbox scene. Too much causes peter-panning on thin geometry. |
-| Normal offset | `shadowParams.x` (default 0.02 world units) | Live slider; helps at grazing sun angles. |
-| Compare bias | `shadowParams.y` (default 0.0005 of the depth range) | Live slider; last resort. |
-
-**Debugging.** View → Shadows → Shadow Map shows the raw linear depth (dark = near the light, white =
-far or empty). It is the square map stretched to the window, and the contrast is low because depth is
-linear over `farZ - nearZ`. Both are display artifacts, not bugs. Use it to fit the box.
-
-**Known limits** (what cascades fix): one fixed box for the whole scene, so resolution per world unit
-is low for large scenes; no cascade selection; no texel snapping (edges would shimmer if the box moved
-with the camera, but it is currently fixed to `center`).
+**Current limits:** no texel snapping or stable projection, so camera movement can cause shimmering;
+no cross-cascade blending, so seams may appear; shared bias behaves differently across cascades; the
+fixed caster margin can clip off-screen casters. Spot and point-light shadows are future work.
 
 ---
 
@@ -558,7 +550,8 @@ Deferred lighting (not the forward PBR pass) writes **linear HDR** into `R16G16B
 | **Lit** | Geometry + lighting + tonemap (default) |
 | **GBuffer → Overview** | Lit full-screen, then 7 tiles on a 5×5 grid |
 | **GBuffer → Albedo, Normal, …** | That channel full-screen; lighting/tonemap skipped |
-| **Shadows → Shadow Map** | The directional shadow map full-screen; lighting/tonemap skipped |
+| **Shadows → Shadow Map** | Selected cascade depth slice full-screen; lighting/tonemap skipped |
+| **Shadows → Cascade Ranges** | Deferred lit view tinted by selected cascade |
 
 Overview packing (`FillGBufferOverviewTiles` in `DebugView.h`): first row left-to-right, leftover
 tiles on the last row (packed, no holes). If there are ever more tiles than two full rows, extras
@@ -649,14 +642,13 @@ Phases stack; later work should not rewrite the deferred frame graph unless the 
   *Optional leftover: IBL.* The **PSO** remains; the **frame** moved to deferred.
 - **Phase 3** — G-buffer + deferred lighting (`PbrCommon.hlsli`) + debug View menu.
   Emissive is luminance in material.b.
-- **Phase 4 (part 1) — Directional shadows** — depth-only shadow pass, comparison-sampled lookup with
-  3×3 PCF and normal-offset/depth bias in the **deferred lighting** pass, shadow-map debug view.
+- **Phase 4 — Cascaded directional shadows** — 1–8 camera-frustum splits, fitted light projections,
+  depth texture array, 3×3 PCF, bias controls, cascade colors, and per-slice debug view.
 
 ### Next
 
-- **Phase 4 (part 2) — Cascaded shadow maps** — `Texture2DArray` depth, camera-frustum splits, per-cascade
-  fitted ortho boxes (the shadow pass already takes `lightViewProj` as root constants, so it can loop),
-  cascade selection in the lighting shader, texel snapping. Spot/point shadows come after.
+- **Shadow improvements** — stable cascade projections and texel snapping, cascade blending, caster
+  coverage and per-cascade bias; spot/point shadows later.
 - **Phase 5 — Many lights** — CPU tile lists, then compute tiled/clustered cull, then bindless
   (SM6.6). First compute/UAV work; lighting shader consumes the lists.
 - **Phase 6 — Instancing** — depends only on Phase 1; useful before foliage.
@@ -690,6 +682,8 @@ Keep the forward PSO for translucency. Do not put blending into the G-buffer.
 | `Gfx/GpuTexture.cpp` | Texture resources + barriers |
 | `Gfx/RenderTarget.cpp` | Offscreen color (HDR, G-buffer colors) |
 | `Gfx/DepthStencil.cpp` | Depth (± sampleable SRV) |
+| `Gfx/ShadowMapArray.cpp` | Cascade depth array, per-slice DSVs and array SRV |
+| `Gfx/GraphicsConstants.h` | Shared CPU cascade capacity |
 | `Gfx/GBuffer.cpp` | G-buffer attachments |
 | `Gfx/GeometryPipeline.cpp` | G-buffer write PSO |
 | `Gfx/ShadowPipeline.cpp` | Depth-only shadow PSO (bias lives here) |

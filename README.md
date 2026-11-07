@@ -1,47 +1,33 @@
 # SummerEngine
 
-A from-scratch **Direct3D 12** renderer. I use it to study rendering tech at the API level, keep the inner workings of a deferred frame visible, and show the kind of graphics systems I already build professionally.
+SummerEngine is a Direct3D 12 renderer I built to study real-time rendering and GPU architecture. It
+implements deferred PBR, cascaded directional shadows, HDR tonemapping, and tools for inspecting the frame.
 
-Opaque geometry is deferred: a depth-only shadow pass renders the sun's shadow map, a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR (with PCF-filtered sun shadows) into an HDR target, then a tonemap resolve hits the swapchain. GPU
-resources, descriptors, pipeline states, synchronization, and render-pass sequencing are managed explicitly through
-Direct3D 12.
+## Features
+
+- [Cascaded shadow maps](#cascaded-shadow-maps) with configurable splits, PCF, and cascade debug views.
+- [Deferred PBR and G-buffer visualization](#g-buffer-visualization).
+- [HDR rendering and tonemapping](#rendering-pipeline).
+- [Explicit GPU resources and synchronization](#explicit-resource-ownership-and-gpu-synchronization).
+- [PIX and RenderDoc capture](#gpu-profiling--debugging).
+- glTF/OBJ model loading with Assimp and an interactive [sandbox](#controls).
+
+## Cascaded shadow maps
+
+The directional light renders 1–8 camera-frustum cascades into a depth texture array. Each cascade has a
+fitted orthographic light projection; deferred lighting selects a slice by camera depth and applies 3×3 PCF.
+The Shadows panel controls cascade count, shadow distance, split distribution, and bias. **View → Shadows**
+offers a color overlay for cascade ranges and a raw depth view with a selectable cascade slice.
+
+The current implementation uses a fixed caster-depth margin. Cascade blending and stable projections
+with texel snapping are planned; seams and shimmering can occur while moving the camera.
 
 <p align="center">
   <img src="docs/media/orbit.gif" alt="Orbiting the FlightHelmet scene under deferred PBR lighting" width="960">
 </p>
 
-<p align="center">
-  <em>Khronos FlightHelmet + procedural ground/cubes. Directional + point lights, ACES tonemap.
-  The yellow HUD is PIX when its GPU capturer is loaded.</em>
-</p>
-
----
-
-## Why this exists
-
-I wanted a renderer I fully own, so I can try ideas and see how the thing actually works. Notes on how it's put together: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
----
-
-## Features
-
-| | |
-|---|---|
-| **Deferred PBR** | Geometry writes a G-buffer; lighting is a fullscreen pass that reuses a shared Cook–Torrance BRDF (`PbrCommon.hlsli`). |
-| **Directional shadows** | A depth-only pass renders the sun's shadow map. Deferred lighting compares against it with 3×3 PCF. Ambient, emissive, and point lights stay unshadowed. |
-| **HDR + tonemap** | Scene radiance is `R16G16B16A16_FLOAT`, then ACES or Reinhard + gamma onto an UNORM backbuffer. |
-| **Debug views** | **View** menu in the same spirit as UE: Lit, a G-buffer Overview, packed channels (albedo, world normal, occlusion, metal, roughness, emissive, depth), and the shadow map. |
-| **glTF / Assimp import** | Multi-material FlightHelmet (base color, normal, ORM, occlusion, emissive) plus procedural meshes. |
-| **D3D12 resource layer** | `GpuTexture`, `RenderTarget`, `DepthStencil`, RAII descriptors, global RTV/DSV/SRV heaps. |
-| **PIX / RenderDoc** | Same capture workflow I use on shipped titles: standalone launch, exe-relative assets, F11 for RenderDoc. |
-
-<p align="center">
-  <img src="docs/media/lit.png" alt="Deferred lit view of FlightHelmet" width="960">
-</p>
-
-<p align="center">
-  <em>Default Lit view — deferred lighting into HDR, ACES tonemap to the swapchain.</em>
-</p>
+The sandbox uses Khronos FlightHelmet with procedural ground and cubes. See
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) for the frame flow and resource layout.
 
 ---
 
@@ -82,21 +68,16 @@ World position is not stored. The lighting shader rebuilds it from depth and `in
 ## Rendering Pipeline
 
 ```text
-shadow pass  →  shadow map (depth from the sun)
-geometry     →  G-buffer (MRT + depth)
-      ↘
-        deferred lighting (sun term × shadow)  →  HDR  →  tonemap  →  backbuffer  →  ImGui
-      ↗
-G-buffer SRVs and the shadow map also feed DebugViewPipeline (full-screen or overview tiles)
+cascade depth passes → shadow texture array
+geometry             → G-buffer (MRT + depth)
+                         ↓
+deferred lighting → HDR → tonemap → backbuffer → ImGui
+        ↑
+G-buffer and selected cascade depth
 ```
 
-<p align="center">
-  <img src="docs/media/shadows.jpg" alt="Directional shadows on the FlightHelmet scene" width="960">
-</p>
-
-<p align="center">
-  <em>Directional shadow map with 3×3 PCF. The Shadows panel fits the light box and the bias. The yellow HUD is PIX.</em>
-</p>
+The G-buffer and cascade array also feed fullscreen debug views. Cascade Ranges tints the lit image by
+the selected cascade; Shadow Map displays the selected depth slice.
 
 This is manually scheduled, not yet a general-purpose render-graph abstraction.
 `PbrPipeline` (forward) is still created so a later translucency pass can reuse it. It is **not** the live opaque path.
@@ -189,7 +170,7 @@ resource transitions between the shadow pass, geometry, deferred lighting, tonem
 For the current pipeline, this keeps execution order and resource usage easy to inspect and debug without adding
 unnecessary abstractions.
 
-As I add cascaded shadows, additional lighting passes, post-processing, temporal effects, and more intermediate
+As I add additional lighting passes, post-processing, temporal effects, and more intermediate
 resources, manually managing dependencies and transitions will become increasingly complex.
 
 I plan to introduce an API-agnostic render graph as I expand the engine toward Vulkan. The graph would describe passes
@@ -217,9 +198,9 @@ SummerEngine is designed to support inspection and debugging of its rendering pi
 
 The current rendering path provides four main stages for GPU inspection:
 
-1. **Shadow pass:** Draws opaque geometry into a depth-only shadow map from the sun's point of view.
+1. **Shadow pass:** Draws opaque geometry into each active directional cascade depth slice.
 2. **Geometry pass:** Draws opaque geometry into the G-buffer and sampleable depth target.
-3. **Deferred lighting pass:** Samples the G-buffer and the shadow map, and evaluates PBR lighting into an HDR render target.
+3. **Deferred lighting pass:** Samples the G-buffer and selected cascade slice, and evaluates PBR lighting into HDR.
 4. **Tonemapping pass:** Resolves the HDR result to the swapchain backbuffer.
 
 The engine manages resource-state transitions and command recording explicitly, making it possible to follow resource
@@ -253,7 +234,7 @@ To compile the engine yourself or explore its implementation, follow the build i
 | MMB / RMB drag | Pan |
 | Scroll, Q / E | Zoom |
 | WASD | Pan |
-| **View** menu | Lit, G-buffer modes, shadow map |
+| **View** menu | Lit, G-buffer modes, cascade ranges, and selected shadow-map slice |
 | F1–F9 | Lit, Overview, Albedo, Normal, Occlusion, Metallic, Roughness, Emissive, Depth |
 | H | Toggle the sandbox panel |
 | F11 | RenderDoc capture (if attached) |
@@ -282,8 +263,8 @@ Debug builds define `SUMMER_DEBUG` and enable the D3D12 debug layer.
 
 ## Roadmap
 
-Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views, directional shadow map with 3×3 PCF.
+Built so far: resource/descriptor layer, forward PBR (kept), deferred PBR, HDR tonemap, G-buffer debug views, and cascaded directional shadows with 3×3 PCF.
 
-**Next:** cascaded shadow maps. After that: tiled lights, instancing, foliage (alpha test in the G-buffer), translucency on the forward path.
+**Next:** cascade stabilization, blending, and caster coverage; then tiled lights, instancing, foliage, and forward translucency.
 
 Details and file-level hook points: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

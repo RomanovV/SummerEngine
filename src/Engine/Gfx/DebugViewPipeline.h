@@ -8,8 +8,8 @@ namespace summer::gfx {
 
 class Device;
 
-// Fullscreen (or viewport) visualization of G-buffer channels and the shadow map. Bindings:
-//   t0..t4  SRV tables  - albedo, normal, material, depth, shadow map
+// Fullscreen (or viewport) visualization of G-buffer channels and a cascade depth slice. Bindings:
+//   t0..t4  SRV tables  - albedo, normal, material, depth, shadow array
 //   b0      32-bit constants - visualization mode and shadow-array slice
 //   s0      static sampler - point, clamp
 class DebugViewPipeline {
