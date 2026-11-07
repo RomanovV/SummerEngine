@@ -52,6 +52,43 @@ bool SRVDescriptor::CreateTexture2D(
     return true;
 }
 
+bool SRVDescriptor::CreateTexture2DArray(
+    ID3D12Device* device,
+    GpuDescriptorHeap& heap,
+    ID3D12Resource* resource,
+    DXGI_FORMAT viewFormat,
+    uint32_t firstArraySlice,
+    uint32_t arraySize,
+    uint32_t mipLevels) {
+    Release();
+    if (!device || !resource || arraySize == 0 || mipLevels == 0) {
+        return false;
+    }
+    const D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
+    if (resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || resourceDesc.SampleDesc.Count != 1 ||
+        firstArraySlice >= resourceDesc.DepthOrArraySize ||
+        arraySize > resourceDesc.DepthOrArraySize - firstArraySlice || mipLevels > resourceDesc.MipLevels) {
+        return false;
+    }
+
+    m_handle = heap.Allocate();
+    if (!m_handle.IsValid()) {
+        return false;
+    }
+    m_heap = &heap;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+    desc.Format = viewFormat;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.Texture2DArray.MostDetailedMip = 0;
+    desc.Texture2DArray.MipLevels = mipLevels;
+    desc.Texture2DArray.FirstArraySlice = firstArraySlice;
+    desc.Texture2DArray.ArraySize = arraySize;
+    device->CreateShaderResourceView(resource, &desc, m_handle.cpu);
+    return true;
+}
+
 void SRVDescriptor::Release() {
     if (m_heap && m_handle.IsValid()) {
         m_heap->Free(m_handle);
@@ -168,6 +205,40 @@ bool DSVDescriptor::Create(
     desc.Format = viewFormat;
     desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     desc.Flags = D3D12_DSV_FLAG_NONE;
+    device->CreateDepthStencilView(resource, &desc, m_cpu);
+    return true;
+}
+
+bool DSVDescriptor::CreateTexture2DArraySlice(
+    ID3D12Device* device,
+    CpuDescriptorHeap& heap,
+    ID3D12Resource* resource,
+    DXGI_FORMAT viewFormat,
+    uint32_t arraySlice) {
+    Release();
+    if (!device || !resource) {
+        return false;
+    }
+    const D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
+    if (resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || resourceDesc.SampleDesc.Count != 1 ||
+        arraySlice >= resourceDesc.DepthOrArraySize) {
+        return false;
+    }
+
+    m_index = heap.Allocate();
+    if (m_index == CpuDescriptorHeap::kInvalidIndex) {
+        return false;
+    }
+    m_heap = &heap;
+    m_cpu = heap.HandleForIndex(m_index);
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC desc{};
+    desc.Format = viewFormat;
+    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+    desc.Flags = D3D12_DSV_FLAG_NONE;
+    desc.Texture2DArray.MipSlice = 0;
+    desc.Texture2DArray.FirstArraySlice = arraySlice;
+    desc.Texture2DArray.ArraySize = 1;
     device->CreateDepthStencilView(resource, &desc, m_cpu);
     return true;
 }

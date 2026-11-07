@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Gfx/GraphicsConstants.h"
+
 #include <DirectXMath.h>
 #include <cstdint>
 
@@ -32,8 +34,11 @@ struct alignas(256) FrameConstants {
     int pointLightCount = 0;
     PointLightGpu pointLights[kMaxPointLights];
     DirectX::XMFLOAT4X4 invViewProj;
-    DirectX::XMFLOAT4X4 lightViewProj;
     DirectX::XMFLOAT4 shadowParams; // x = normal offset (world units), y = depth bias, z = 1/shadowMapSize, w = unused
+    DirectX::XMFLOAT4X4 view; // camera view matrix
+    DirectX::XMFLOAT4 cascadeFarSplits[kMaxCascades]; // .x stores boundaries
+    DirectX::XMUINT4 cascadeDebug; // x = active cascade count, y = show cascade ranges, z/w unused
+    DirectX::XMFLOAT4X4 cascadeLightViewProj[kMaxCascades];
 };
 
 } // namespace summer::gfx

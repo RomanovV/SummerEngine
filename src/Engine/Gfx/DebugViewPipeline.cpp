@@ -68,7 +68,7 @@ bool DebugViewPipeline::CreateRootSignature(Device& device) {
     params[kSrvCount].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[kSrvCount].Constants.ShaderRegister = 0;
     params[kSrvCount].Constants.RegisterSpace = 0;
-    params[kSrvCount].Constants.Num32BitValues = 1;
+    params[kSrvCount].Constants.Num32BitValues = 2;
 
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -164,7 +164,8 @@ void DebugViewPipeline::Draw(
     D3D12_GPU_DESCRIPTOR_HANDLE material,
     D3D12_GPU_DESCRIPTOR_HANDLE depth,
     D3D12_GPU_DESCRIPTOR_HANDLE shadowMap,
-    Mode mode) {
+    Mode mode,
+    uint32_t shadowSlice) {
     commandList->SetPipelineState(m_pipelineState);
     commandList->SetGraphicsRootSignature(m_rootSignature);
     commandList->SetGraphicsRootDescriptorTable(0, albedo);
@@ -172,8 +173,8 @@ void DebugViewPipeline::Draw(
     commandList->SetGraphicsRootDescriptorTable(2, material);
     commandList->SetGraphicsRootDescriptorTable(3, depth);
     commandList->SetGraphicsRootDescriptorTable(4, shadowMap);
-    const uint32_t modeValue = static_cast<uint32_t>(mode);
-    commandList->SetGraphicsRoot32BitConstants(5, 1, &modeValue, 0);
+    const uint32_t debugConstants[] = {static_cast<uint32_t>(mode), shadowSlice};
+    commandList->SetGraphicsRoot32BitConstants(5, 2, debugConstants, 0);
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->IASetVertexBuffers(0, 0, nullptr);
     commandList->IASetIndexBuffer(nullptr);

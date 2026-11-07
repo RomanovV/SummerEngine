@@ -29,7 +29,7 @@ GpuTexture& GpuTexture::operator=(GpuTexture&& other) noexcept {
 
 bool GpuTexture::Create(ID3D12Device* device, const Desc& desc) {
     Release();
-    if (!device || desc.width == 0 || desc.height == 0) {
+    if (!device || desc.width == 0 || desc.height == 0 || desc.arraySize == 0) {
         return false;
     }
     m_desc = desc;
@@ -41,7 +41,7 @@ bool GpuTexture::Create(ID3D12Device* device, const Desc& desc) {
     resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     resourceDesc.Width = desc.width;
     resourceDesc.Height = desc.height;
-    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.DepthOrArraySize = desc.arraySize;
     resourceDesc.MipLevels = desc.mipLevels;
     resourceDesc.Format = desc.format;
     resourceDesc.SampleDesc.Count = 1;

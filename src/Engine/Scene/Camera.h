@@ -20,6 +20,8 @@ public:
     void SetDistance(float distance) { m_distance = distance; }
 
     float GetFovY() const { return m_fovY; }
+    float GetNearZ() const { return m_nearZ; }
+    float GetFarZ() const { return m_farZ; }
     void SetFovY(float fovY) { m_fovY = fovY; }
 
 private:

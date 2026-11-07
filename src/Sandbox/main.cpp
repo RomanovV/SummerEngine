@@ -229,10 +229,16 @@ int main() {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Shadows")) {
-                    const summer::gfx::DebugView shadowView = summer::gfx::DebugView::ShadowMap;
-                    const bool selected = renderer.GetDebugView() == shadowView;
-                    if (ImGui::MenuItem(summer::gfx::DebugViewLabel(shadowView), nullptr, selected)) {
-                        renderer.SetDebugView(shadowView);
+                    const summer::gfx::DebugView shadowViews[] = {
+                        summer::gfx::DebugView::ShadowMap,
+                        summer::gfx::DebugView::CascadeRanges,
+                    };
+                    for (summer::gfx::DebugView view : shadowViews)
+                    {
+                        const bool selected = renderer.GetDebugView() == view;
+                        if (ImGui::MenuItem(summer::gfx::DebugViewLabel(view), nullptr, selected)) {
+                            renderer.SetDebugView(view);
+                        }
                     }
                     ImGui::EndMenu();
                 }
@@ -316,12 +322,26 @@ int main() {
 
         if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
             summer::gfx::ShadowSettings& shadow = renderer.Shadow();
-            ImGui::SliderFloat3("Center", &shadow.center.x, -10.0f, 10.0f);
-            ImGui::SliderFloat("Ortho Size", &shadow.orthoSize, 2.0f, 60.0f);
-            ImGui::SliderFloat("Distance", &shadow.distance, 5.0f, 60.0f);
-            ImGui::SliderFloat("Far Z", &shadow.farZ, 5.0f, 120.0f);
             ImGui::SliderFloat("Normal Offset", &shadow.normalOffset, 0.0f, 0.2f, "%.3f");
             ImGui::SliderFloat("Depth Bias", &shadow.depthBias, 0.0f, 0.005f, "%.5f");
+            ImGui::SliderFloat("Shadow Distance", &shadow.shadowDistance, 1.0f, 500.0f);
+            ImGui::SliderFloat("Split Lambda", &shadow.splitLambda, 0.0f, 1.0f);
+            int cascadeCount = static_cast<int>(shadow.GetActiveCascadeCount());
+            if (ImGui::SliderInt("Cascade Count", &cascadeCount, 1, static_cast<int>(summer::gfx::kMaxCascades))) {
+                shadow.cascadeCount = static_cast<uint32_t>(cascadeCount);
+            }
+            const uint32_t activeCascades = shadow.GetActiveCascadeCount();
+            if (shadow.debugCascade >= activeCascades) {
+                shadow.debugCascade = activeCascades - 1;
+            }
+            int debugCascade = static_cast<int>(shadow.debugCascade);
+            if (ImGui::SliderInt("Shadow Map Cascade", &debugCascade, 0, static_cast<int>(activeCascades) - 1)) {
+                shadow.debugCascade = static_cast<uint32_t>(debugCascade);
+            }
+            const auto splits = renderer.CalculateCascadeSplits(scene.GetCamera());
+            for (uint32_t i = 0; i < shadow.GetActiveCascadeCount(); ++i) {
+                ImGui::Text("Cascade %u: %.3f - %.3f", static_cast<unsigned int>(i), splits[i], splits[i + 1]);
+            }
         }
 
         if (helmetModel && ImGui::CollapsingHeader("Helmet Materials")) {

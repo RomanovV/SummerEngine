@@ -7,6 +7,10 @@
 #include <DirectXMath.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+
 namespace summer::gfx {
 
 namespace {
@@ -28,6 +32,8 @@ constexpr uint32_t kDsvHeapCapacity = 16;
     
 // Shadow Depth Size
 constexpr uint32_t kShadowMapSize = 2048;
+    
+constexpr float kCasterDepthMargin = 10.0f; // world units along light-space depth
     
 } // namespace
 
@@ -56,6 +62,140 @@ bool Renderer::CreateDefaultTextures() {
     m_materialDefaults.occlusion = &m_defaultOcclusion;
     m_materialDefaults.emissive = &m_defaultEmissive;
     return true;
+}
+
+std::array<float, kMaxCascades + 1> Renderer::CalculateCascadeSplits(const summer::scene::Camera& camera) const {
+    std::array<float, kMaxCascades + 1> splits{};
+    float cameraNear = camera.GetNearZ();
+    float cameraFar = camera.GetFarZ();
+    
+    
+    assert(std::isfinite(cameraNear) && std::isfinite(cameraFar) && cameraNear > 0.0f && cameraNear < cameraFar);
+
+    uint32_t activeCount = m_shadow.GetActiveCascadeCount();
+    // Keep a positive shadow range, even for a very narrow camera range.
+    const float minimumFar = std::min(cameraFar, std::max(cameraNear + 0.01f, std::nextafter(cameraNear, cameraFar)));
+    float effectiveFar = std::clamp(m_shadow.shadowDistance, minimumFar, cameraFar);
+    float splitLambdaClamped = std::clamp(m_shadow.splitLambda, 0.0f, 1.0f);
+    splits[0] = cameraNear;
+    splits[activeCount] = effectiveFar;
+    
+    for (uint32_t i = 1; i < activeCount; ++i) {
+        float t = static_cast<float>(i) / static_cast<float>(activeCount);
+        
+        float uniformSplit = cameraNear + (effectiveFar - cameraNear) * t;
+        float logSplit = cameraNear * std::pow(effectiveFar / cameraNear, t);
+        
+        splits[i] = (1.0f - splitLambdaClamped) * uniformSplit + splitLambdaClamped * logSplit;
+    }
+    return splits;
+}
+std::array<DirectX::XMFLOAT3, 8> Renderer::CalculateFrustumSliceCorners(const summer::scene::Camera& camera, float aspect, float nearZ, float farZ) const
+{
+    /* corners[0..3] = near plane
+     * corners[4..7] = far plane
+     * 
+     * Within each plane:
+     * 0 = bottom left
+     * 1 = top left
+     * 2 = bottom right
+     * 3 = top right
+     */
+    std::array<DirectX::XMFLOAT3, 8> corners{};
+    const float tanHalfFovY = std::tan(camera.GetFovY() * 0.5f);
+    const DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(nullptr, camera.GetViewMatrix());
+    const float planeDepths[] = {nearZ, farZ};
+
+    for (uint32_t plane = 0; plane < 2; ++plane) {
+        const float z = planeDepths[plane];
+        const float halfHeight = z * tanHalfFovY;
+        const float halfWidth = halfHeight * aspect;
+
+        for (uint32_t corner = 0; corner < 4; ++corner) {
+            // Bit 1 selects left/right; bit 0 selects bottom/top.
+            const float x = (corner & 2u) ? halfWidth : -halfWidth;
+            const float y = (corner & 1u) ? halfHeight : -halfHeight;
+            const DirectX::XMVECTOR viewCorner = DirectX::XMVectorSet(x, y, z, 1.0f);
+            const DirectX::XMVECTOR worldCorner = DirectX::XMVector3TransformCoord(viewCorner, invView);
+            DirectX::XMStoreFloat3(&corners[plane * 4 + corner], worldCorner);
+        }
+    }
+
+    return corners;
+}
+CascadeFit Renderer::CalculateCascadeFit(const std::array<DirectX::XMFLOAT3, 8>& corners, const DirectX::XMFLOAT3& lightDirection, float casterDepthMargin) const
+{
+    DirectX::XMVECTOR sum = DirectX::XMVectorZero();
+
+    for (const auto& corner : corners) {
+        sum = DirectX::XMVectorAdd(sum, DirectX::XMLoadFloat3(&corner));
+    }
+
+    DirectX::XMVECTOR center = DirectX::XMVectorScale(sum, 1.0f / 8.0f);
+    
+    DirectX::XMVECTOR direction = DirectX::XMLoadFloat3(&lightDirection);
+    const float directionLengthSq =
+        DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(direction));
+    assert(casterDepthMargin >= 0.0f && directionLengthSq > 1e-8f);
+    direction = DirectX::XMVector3Normalize(direction);
+    
+    // Calculate Radius (max world dist corner-center)
+    float maxRadius = 0.0f;
+    for (auto corner : corners)
+    {
+        DirectX::XMVECTOR CornerVector = DirectX::XMLoadFloat3(&corner);
+        DirectX::XMVECTOR offset = DirectX::XMVectorSubtract(CornerVector, center);
+        DirectX::XMVECTOR lengthVector = DirectX::XMVector3Length(offset);
+        float radius = DirectX::XMVectorGetX(lengthVector);
+        if (radius > maxRadius) maxRadius = radius;
+    }
+    
+    float eyeDistance = maxRadius + casterDepthMargin;
+    DirectX::XMVECTOR eye = DirectX::XMVectorAdd(center, DirectX::XMVectorScale(direction, -eyeDistance));
+    
+    // LookAt breaks if "up" is parallel to the view direction; swap up when the sun is vertical.
+    DirectX::XMVECTOR up = fabsf(DirectX::XMVectorGetY(direction)) > 0.99f ? 
+    DirectX::XMVectorSet(0,0,1,0) : 
+    DirectX::XMVectorSet(0,1,0,0);
+    
+    DirectX::XMMATRIX lightView = DirectX::XMMatrixLookAtLH(eye, center, up);
+
+    DirectX::XMVECTOR lightCorner = DirectX::XMVector3TransformCoord(
+    DirectX::XMLoadFloat3(&corners[0]),lightView);
+    
+    DirectX::XMVECTOR minBounds = lightCorner;
+    DirectX::XMVECTOR maxBounds = lightCorner;
+    for (uint32_t i = 1; i < 8 ; ++i)
+    {
+        lightCorner = DirectX::XMVector3TransformCoord(DirectX::XMLoadFloat3(&corners[i]),lightView);
+        minBounds = DirectX::XMVectorMin(minBounds, lightCorner);
+        maxBounds = DirectX::XMVectorMax(maxBounds, lightCorner);
+    }
+
+    CascadeFit fit{};
+    DirectX::XMStoreFloat4x4(&fit.lightView, lightView);
+    DirectX::XMStoreFloat3(&fit.minBounds, minBounds);
+    DirectX::XMStoreFloat3(&fit.maxBounds, maxBounds);
+    // Include potential casters toward the light, outside the receiver slice.
+    fit.minBounds.z -= casterDepthMargin;
+
+#if defined(SUMMER_DEBUG)
+    assert(std::isfinite(fit.minBounds.x) && std::isfinite(fit.minBounds.y) &&
+           std::isfinite(fit.minBounds.z) && std::isfinite(fit.maxBounds.x) &&
+           std::isfinite(fit.maxBounds.y) && std::isfinite(fit.maxBounds.z));
+    assert(fit.minBounds.x < fit.maxBounds.x && fit.minBounds.y < fit.maxBounds.y &&
+           fit.minBounds.z < fit.maxBounds.z);
+#endif
+
+    auto lightProjection = DirectX::XMMatrixOrthographicOffCenterLH(
+        fit.minBounds.x, fit.maxBounds.x,  // left, right
+        fit.minBounds.y, fit.maxBounds.y,  // bottom, top
+        fit.minBounds.z, fit.maxBounds.z); // near, far
+    
+    auto lightViewProj = lightView * lightProjection;
+    DirectX::XMStoreFloat4x4(&fit.lightViewProj, lightViewProj);
+    
+    return fit;
 }
 
 bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
@@ -87,7 +227,7 @@ bool Renderer::Initialize(Window& window, bool enableDebugLayer) {
             d3dDevice, m_rtvHeap, m_dsvHeap, m_srvHeap, m_viewportWidth, m_viewportHeight) ||
         !CreateDefaultTextures() ||
         !m_frameCb.Initialize(m_device, sizeof(FrameConstants), FrameCount) ||
-        !m_shadowMap.Initialize(d3dDevice, m_dsvHeap, kShadowMapSize, kShadowMapSize, DXGI_FORMAT_D32_FLOAT, &m_srvHeap)) {
+        !m_cascadeShadowMaps.Initialize(d3dDevice, m_dsvHeap, m_srvHeap, kShadowMapSize, kShadowMapSize)) {
         Shutdown();
         return false;
     }
@@ -209,7 +349,7 @@ void Renderer::Shutdown() {
     m_hdrTarget.Shutdown();
     m_depth.Shutdown();
     m_gbuffer.Shutdown();
-    m_shadowMap.Shutdown();
+    m_cascadeShadowMaps.Shutdown();
 
     m_imguiLayer.Shutdown();
     m_rtvHeap.Shutdown();
@@ -273,8 +413,9 @@ void Renderer::DrawGBufferDebug(
         m_gbuffer.Color(GBuffer::Normal).SRV(),
         m_gbuffer.Color(GBuffer::Material).SRV(),
         m_gbuffer.Depth().SRV(),
-        m_shadowMap.SRV(),
-        mode);
+        m_cascadeShadowMaps.SRV(),
+        mode,
+        std::min(m_shadow.debugCascade, m_shadow.GetActiveCascadeCount() - 1));
 }
 
 namespace {
@@ -344,18 +485,52 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     FrameConstants fc{};
     DirectX::XMStoreFloat4x4(&fc.viewProj, DirectX::XMMatrixTranspose(viewProj));
     DirectX::XMStoreFloat4x4(&fc.invViewProj, DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, viewProj)));
+    DirectX::XMStoreFloat4x4(&fc.view, DirectX::XMMatrixTranspose(view));
     
-    DirectX::XMVECTOR dir = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&m_lighting.directional.direction));
-    DirectX::XMVECTOR center = DirectX::XMLoadFloat3(&m_shadow.center);
-    DirectX::XMVECTOR eye = DirectX::XMVectorSubtract(center, DirectX::XMVectorScale(dir, m_shadow.distance));
-    // LookAt breaks if "up" is parallel to the view direction; swap up when the sun is vertical.
-    DirectX::XMVECTOR up = fabsf(DirectX::XMVectorGetY(dir)) > 0.99f ? DirectX::XMVectorSet(0,0,1,0) : DirectX::XMVectorSet(0,1,0,0);
+    // Use one valid direction for shadow cameras and lighting, even if the UI supplies zero.
+    DirectX::XMVECTOR dir = DirectX::XMLoadFloat3(&m_lighting.directional.direction);
+    const float directionLengthSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(dir));
+    if (!std::isfinite(directionLengthSq) || directionLengthSq <= 1e-8f) {
+        dir = DirectX::XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
+    } else {
+        dir = DirectX::XMVector3Normalize(dir);
+    }
+    DirectX::XMFLOAT3 lightDirection;
+    DirectX::XMStoreFloat3(&lightDirection, dir);
 
-    DirectX::XMMATRIX lightView = DirectX::XMMatrixLookAtLH(eye, center, up);
-    DirectX::XMMATRIX lightProj = DirectX::XMMatrixOrthographicLH(m_shadow.orthoSize, m_shadow.orthoSize, m_shadow.nearZ, m_shadow.farZ);
+    const uint32_t activeCascadeCount = m_shadow.GetActiveCascadeCount();
+    const auto cascadeSplits = CalculateCascadeSplits(scene.GetCamera());
+    std::array<CascadeFit, kMaxCascades> cascadeFits{};
     
-    DirectX::XMMATRIX lightViewProj = lightView * lightProj;
-    DirectX::XMStoreFloat4x4(&fc.lightViewProj, DirectX::XMMatrixTranspose(lightViewProj));
+    for (uint32_t i = 0; i < activeCascadeCount; ++i) {
+        fc.cascadeFarSplits[i].x = cascadeSplits[i + 1];
+        auto corners = CalculateFrustumSliceCorners(scene.GetCamera(), Aspect(), cascadeSplits[i], cascadeSplits[i+1]);
+        cascadeFits[i] = CalculateCascadeFit(corners, lightDirection, kCasterDepthMargin);
+
+#if defined(SUMMER_DEBUG)
+        constexpr float kNdcTolerance = 0.001f;
+        const DirectX::XMMATRIX cascadeViewProj = DirectX::XMLoadFloat4x4(&cascadeFits[i].lightViewProj);
+        for (const auto& corner : corners) {
+            const DirectX::XMVECTOR ndc = DirectX::XMVector3TransformCoord(
+                DirectX::XMLoadFloat3(&corner), cascadeViewProj);
+            DirectX::XMFLOAT3 position;
+            DirectX::XMStoreFloat3(&position, ndc);
+            assert(std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z));
+            assert(position.x >= -1.0f - kNdcTolerance && position.x <= 1.0f + kNdcTolerance);
+            assert(position.y >= -1.0f - kNdcTolerance && position.y <= 1.0f + kNdcTolerance);
+            assert(position.z >= -kNdcTolerance && position.z <= 1.0f + kNdcTolerance);
+        }
+#endif
+        
+        const DirectX::XMMATRIX cascadeMatrix = DirectX::XMLoadFloat4x4(&cascadeFits[i].lightViewProj);
+        DirectX::XMFLOAT4X4 uploadedMatrix;
+        DirectX::XMStoreFloat4x4(&uploadedMatrix, DirectX::XMMatrixTranspose(cascadeMatrix));
+        fc.cascadeLightViewProj[i] = uploadedMatrix;
+    }
+    
+    
+    fc.cascadeDebug.x = activeCascadeCount;
+    fc.cascadeDebug.y = m_debugView == DebugView::CascadeRanges ? 1u : 0u;
     
     fc.shadowParams = {
         m_shadow.normalOffset,
@@ -366,6 +541,7 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     
     fc.cameraPos = scene.GetCamera().GetPosition();
     fc.dirLight = m_lighting.directional;
+    fc.dirLight.direction = lightDirection;
     fc.ambient = m_lighting.ambient;
     fc.pointLightCount = m_lighting.pointCount;
     for (int i = 0; i < m_lighting.pointCount && i < static_cast<int>(kMaxPointLights); ++i) {
@@ -377,31 +553,38 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
     commandList->SetDescriptorHeaps(1, heaps);
     
-    m_shadowMap.TransitionTo(commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     const D3D12_VIEWPORT shadowVp{0, 0, float(kShadowMapSize), float(kShadowMapSize), 0.0f, 1.0f};
     const D3D12_RECT shadowScissor{0,0,static_cast<LONG>(kShadowMapSize), static_cast<LONG>(kShadowMapSize)};
     commandList->RSSetViewports(1, &shadowVp);
     commandList->RSSetScissorRects(1, &shadowScissor);
     
-    const D3D12_CPU_DESCRIPTOR_HANDLE shadowDsv = m_shadowMap.DSV();
-    commandList->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsv);
-    commandList->ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    
+    m_cascadeShadowMaps.TransitionTo(commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     m_shadowPipeline.Bind(commandList);
-    m_shadowPipeline.SetLightViewProj(commandList, fc.lightViewProj);
-    for (const summer::scene::Entity& entity : scene.GetEntities()) {
-        if (!entity.model) {
-            continue;
-        }
-        const DirectX::XMMATRIX world = DirectX::XMLoadFloat4x4(&entity.transform);
+    
+    for (uint32_t i=0; i < activeCascadeCount; ++i) {
+        const D3D12_CPU_DESCRIPTOR_HANDLE cascadeDsv = m_cascadeShadowMaps.DSV(i);
+        commandList->OMSetRenderTargets(0, nullptr, FALSE, &cascadeDsv);
+        commandList->ClearDepthStencilView(cascadeDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        const DirectX::XMMATRIX cascadeMatrix = DirectX::XMLoadFloat4x4(&cascadeFits[i].lightViewProj);
+        DirectX::XMFLOAT4X4 uploadedMatrix;
+        DirectX::XMStoreFloat4x4(&uploadedMatrix, DirectX::XMMatrixTranspose(cascadeMatrix));
+        m_shadowPipeline.SetLightViewProj(commandList, uploadedMatrix);
+        
+        for (const summer::scene::Entity& entity : scene.GetEntities()) {
+            if (!entity.model) {
+                continue;
+            }
+            const DirectX::XMMATRIX world = DirectX::XMLoadFloat4x4(&entity.transform);
 
-        DirectX::XMFLOAT4X4 model;
-        DirectX::XMStoreFloat4x4(&model, DirectX::XMMatrixTranspose(world));
-        m_shadowPipeline.SetObjectConstants(commandList, model);
-        entity.model->DrawDepthOnly(commandList);
+            DirectX::XMFLOAT4X4 model;
+            DirectX::XMStoreFloat4x4(&model, DirectX::XMMatrixTranspose(world));
+            m_shadowPipeline.SetObjectConstants(commandList, model);
+            entity.model->DrawDepthOnly(commandList);
+        }
     }
     
-    m_shadowMap.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_cascadeShadowMaps.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    
     
     
     const D3D12_VIEWPORT viewport{
@@ -442,7 +625,8 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
     m_gbuffer.TransitionColorsTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     m_gbuffer.TransitionDepthTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    const bool showLit = m_debugView == DebugView::Lit || m_debugView == DebugView::GBufferOverview;
+    const bool showLit = m_debugView == DebugView::Lit || m_debugView == DebugView::GBufferOverview ||
+                         m_debugView == DebugView::CascadeRanges;
     if (showLit) {
         // --- Pass 2: deferred lighting into the HDR target ---
         m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -457,7 +641,7 @@ void Renderer::RenderFrame(const summer::scene::Scene& scene) {
             m_gbuffer.Color(GBuffer::Normal).SRV(),
             m_gbuffer.Color(GBuffer::Material).SRV(),
             m_gbuffer.Depth().SRV(),
-            m_shadowMap.SRV());
+            m_cascadeShadowMaps.SRV());
 
         m_hdrTarget.TransitionTo(commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
+
 #include "Assets/MeshData.h"
 #include "Gfx/ConstantBuffer.h"
 #include "Gfx/CpuDescriptorHeap.h"
@@ -10,6 +13,8 @@
 #include "Gfx/Device.h"
 #include "Gfx/GBuffer.h"
 #include "Gfx/GeometryPipeline.h"
+#include "Gfx/GraphicsConstants.h"
+#include "Gfx/ShadowMapArray.h"
 #include "Gfx/ShadowPipeline.h"
 #include "Gfx/GpuDescriptorHeap.h"
 #include "Gfx/ImGuiLayer.h"
@@ -34,6 +39,7 @@ struct Image;
 }
 
 namespace summer::gfx {
+    
 
 // Editable scene lighting state (driven by the sandbox UI, consumed each frame).
 struct SceneLighting {
@@ -43,14 +49,22 @@ struct SceneLighting {
     DirectX::XMFLOAT3 ambient{0.03f, 0.03f, 0.04f};
 };
     
+struct CascadeFit {
+    DirectX::XMFLOAT4X4 lightView;
+    DirectX::XMFLOAT4X4 lightViewProj;
+    DirectX::XMFLOAT3 minBounds;
+    DirectX::XMFLOAT3 maxBounds;
+};
+    
 struct ShadowSettings {
-    DirectX::XMFLOAT3 center{0.0f, 1.0f,0.0f};
-    float orthoSize = 20.0f; // width = height of the ortho box (world units)
-    float distance  = 20.0f; // how far the light eye backs away from the center
-    float nearZ     = 0.1f;
-    float farZ      = 40.0f; // must reach past center + half the scene depth
     float normalOffset = 0.02f; // world units; start around 1~3 shadow-map texels
     float depthBias = 0.0005f; // in [0,1] depth; 1.0 = full near-to-far range
+    float shadowDistance = 100.0f; // farthest camera view-space distance covered by cascades
+    float splitLambda = 0.5f; // blend between uniform and logarithmic splits 
+    uint32_t cascadeCount = 4;
+    uint32_t debugCascade = 0;
+    
+    uint32_t GetActiveCascadeCount() const { return std::clamp(cascadeCount, 1u, kMaxCascades); }
 };
 
 class Renderer {
@@ -83,6 +97,17 @@ public:
 
     DebugView GetDebugView() const { return m_debugView; }
     void SetDebugView(DebugView view) { m_debugView = view; }
+    
+    std::array<float, kMaxCascades + 1> CalculateCascadeSplits(const summer::scene::Camera& camera) const;
+    std::array<DirectX::XMFLOAT3, 8> CalculateFrustumSliceCorners(
+        const summer::scene::Camera& camera, 
+        float aspect, 
+        float nearZ, 
+        float farZ) const;
+    CascadeFit CalculateCascadeFit(
+        const std::array<DirectX::XMFLOAT3, 8>& corners,
+        const DirectX::XMFLOAT3& lightDirection,
+        float casterDepthMargin) const;
 
     // Native ID3D12Device* for GPU capture tool integration. Null before Initialize().
     void* GetNativeDevice() const;
@@ -120,7 +145,6 @@ private:
     
     RenderTarget m_hdrTarget;
     DepthStencil m_depth; // forward pass; the G-buffer owns the sampleable depth used later
-    DepthStencil m_shadowMap;
     GBuffer m_gbuffer;
     ConstantBuffer m_frameCb;
 
@@ -137,6 +161,7 @@ private:
 
     SceneLighting m_lighting;
     ShadowSettings m_shadow;
+    ShadowMapArray m_cascadeShadowMaps;
     float m_exposure = 1.0f;
     TonemapPipeline::Operator m_tonemapOp = TonemapPipeline::Operator::ACES;
     DebugView m_debugView = DebugView::Lit;

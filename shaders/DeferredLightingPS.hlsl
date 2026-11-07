@@ -1,5 +1,16 @@
 ﻿static const float PI = 3.14159265359f;
 static const uint kMaxPointLights = 4;
+static const uint kMaxCascades = 8; // Should mirror C++ definition
+static const float3 kCascadeColors[kMaxCascades] = {
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f,
+    0.5f, 0.0f, 0.5f,
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, 0.0f,
+    1.0f, 0.5f, 0.0f,
+    1.0f, 0.0f, 1.0f,
+};
 
 struct DirectionalLight {
     float3 direction;
@@ -24,15 +35,18 @@ cbuffer FrameConstants : register(b1) {
     int pointLightCount;
     PointLight pointLights[kMaxPointLights];
     float4x4 invViewProj;
-    float4x4 lightViewProj;
     float4 shadowParams;
+    float4x4 view;
+    float4 cascadeFarSplits[kMaxCascades];
+    uint4 cascadeDebug;
+    float4x4 cascadeLightViewProj[kMaxCascades];
 };
 
 Texture2D gAlbedo   : register(t0);
 Texture2D gNormal   : register(t1);
 Texture2D gMaterial : register(t2);
 Texture2D gDepth    : register(t3);
-Texture2D gShadowMap : register(t4);
+Texture2DArray gShadowMap : register(t4);
 SamplerState gSampler : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
 
@@ -49,15 +63,24 @@ float3 WorldPositionFromDepth(float2 uv, float depth) {
     return world.xyz / world.w;
 }
 
-float DirectionalShadow(float3 worldPos, float3 N) {
+uint SelectCascade(float3 worldPos) {
+    float viewZ = mul(float4(worldPos, 1.0f), view).z;
+    for (int i=0;i<cascadeDebug.x;++i)
+    {
+        if (viewZ <= cascadeFarSplits[i].x) return i;
+    }
+    return cascadeDebug.x;
+}
+
+float DirectionalShadow(float3 worldPos, float3 N, uint cascadeIndex) {
+    if (cascadeIndex >= cascadeDebug.x) return 1.0f;
+    
     float3 biasedPos = worldPos + N * shadowParams.x; // shadowParams.x = NormalOffset
-    float4 lightClip = mul(float4(biasedPos, 1.0f), lightViewProj);
+    float4 lightClip = mul(float4(biasedPos, 1.0f), cascadeLightViewProj[cascadeIndex]);
     float3 ndc = lightClip.xyz / lightClip.w;
     float2 uv = float2(ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f);
     
-    if (any(uv < 0.0f) || any(uv > 1.0f) || ndc.z > 1.0f) {
-        return 1.0f;
-    }
+    if (any(uv < 0.0f) || any(uv > 1.0f) || ndc.z < 0.0f || ndc.z > 1.0f) return 1.0f;
     
     float texel = shadowParams.z; // 1/shadow map size
     float refDepth = ndc.z - shadowParams.y; // shadowParams.y = depth bias
@@ -66,7 +89,9 @@ float DirectionalShadow(float3 worldPos, float3 N) {
     for (int y = -1; y <= 1; ++y) {
         [unroll]
         for (int x = -1; x <= 1; ++x) {
-            lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, uv + float2(x, y) * texel, refDepth);
+            float2 sampleUv = uv + float2(x, y) * texel;
+            float3 sampleLocation = float3(sampleUv, float(cascadeIndex));
+            lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, sampleLocation, refDepth);
         }
     }
     
@@ -89,6 +114,7 @@ float4 main(PSInput input) : SV_Target {
     float emissive = packed.b;
 
     float3 worldPos = WorldPositionFromDepth(input.uv, depth);
+    uint cascadeIndex = SelectCascade(worldPos);
     float3 V = normalize(cameraPos - worldPos);
 
     float3 color = 0.0f;
@@ -96,7 +122,7 @@ float4 main(PSInput input) : SV_Target {
     {
         float3 L = normalize(-dirLight.direction);
         float3 radiance = dirLight.color * dirLight.intensity;
-        float shadow = DirectionalShadow(worldPos, N);
+        float shadow = DirectionalShadow(worldPos, N, cascadeIndex);
         color += BRDF(N, V, L, radiance, albedo, metallic, roughness) * shadow;
     }
 
@@ -113,5 +139,9 @@ float4 main(PSInput input) : SV_Target {
 
     float3 ambientTerm = ambient * albedo * occlusion;
     float3 finalColor = color * occlusion + ambientTerm + emissive;
+    if (cascadeDebug.y != 0u && cascadeIndex < cascadeDebug.x)
+    {
+        finalColor *= lerp(float3(1.0f, 1.0f, 1.0f), kCascadeColors[cascadeIndex], 0.65f);
+    }
     return float4(finalColor, 1.0f);
 }

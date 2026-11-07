@@ -31,6 +31,14 @@ public:
         ID3D12Resource* resource,
         DXGI_FORMAT viewFormat,
         uint32_t mipLevels = 1);
+    bool CreateTexture2DArray(
+        ID3D12Device* device,
+        GpuDescriptorHeap& heap,
+        ID3D12Resource* resource,
+        DXGI_FORMAT viewFormat,
+        uint32_t firstArraySlice,
+        uint32_t arraySize,
+        uint32_t mipLevels = 1);
     void Release();
 
     bool IsValid() const { return m_handle.IsValid(); }
@@ -85,6 +93,12 @@ public:
         CpuDescriptorHeap& heap,
         ID3D12Resource* resource,
         DXGI_FORMAT viewFormat);
+    bool CreateTexture2DArraySlice(
+        ID3D12Device* device,
+        CpuDescriptorHeap& heap,
+        ID3D12Resource* resource,
+        DXGI_FORMAT viewFormat,
+        uint32_t arraySlice);
     void Release();
 
     bool IsValid() const { return m_index != CpuDescriptorHeap::kInvalidIndex; }

@@ -10,7 +10,7 @@ class Device;
 
 // Fullscreen (or viewport) visualization of G-buffer channels and the shadow map. Bindings:
 //   t0..t4  SRV tables  - albedo, normal, material, depth, shadow map
-//   b0      32-bit constants - visualization mode
+//   b0      32-bit constants - visualization mode and shadow-array slice
 //   s0      static sampler - point, clamp
 class DebugViewPipeline {
 public:
@@ -45,7 +45,8 @@ public:
         D3D12_GPU_DESCRIPTOR_HANDLE material,
         D3D12_GPU_DESCRIPTOR_HANDLE depth,
         D3D12_GPU_DESCRIPTOR_HANDLE shadowMap,
-        Mode mode);
+        Mode mode,
+        uint32_t shadowSlice);
 
 private:
     bool CreateRootSignature(Device& device);

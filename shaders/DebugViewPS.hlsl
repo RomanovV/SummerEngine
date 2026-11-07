@@ -2,12 +2,13 @@ Texture2D gAlbedo   : register(t0);
 Texture2D gNormal   : register(t1);
 Texture2D gMaterial : register(t2);
 Texture2D gDepth    : register(t3);
-Texture2D gShadowMap : register(t4);
+Texture2DArray gShadowMap : register(t4);
 SamplerState gSampler : register(s0);
 
 cbuffer DebugViewConstants : register(b0)
 {
     uint mode;
+    uint shadowSlice;
 };
 
 struct PSInput
@@ -40,7 +41,7 @@ float4 main(PSInput input) : SV_Target
         color = (depth >= 0.99999f) ? 0.0f : pow(saturate(depth), 24.0f);
     } else {
         // Orthographic shadow depth is linear in [0,1]: dark = near the light, white = far/empty.
-        color = gShadowMap.Sample(gSampler, input.uv).rrr;
+        color = gShadowMap.Sample(gSampler, float3(input.uv, float(shadowSlice))).rrr;
     }
 
     return float4(color, 1.0f);

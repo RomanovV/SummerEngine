@@ -1,6 +1,6 @@
 # SummerEngine
 
-A from-scratch **Direct3D 12** renderer — no engine middleware, no Unreal, no Unity. I use it to study rendering tech at the API level, keep the inner workings of a deferred frame visible, and show the kind of graphics systems I already build professionally.
+A from-scratch **Direct3D 12** renderer. I use it to study rendering tech at the API level, keep the inner workings of a deferred frame visible, and show the kind of graphics systems I already build professionally.
 
 Opaque geometry is deferred: a depth-only shadow pass renders the sun's shadow map, a G-buffer is filled, a fullscreen pass lights it with Cook–Torrance PBR (with PCF-filtered sun shadows) into an HDR target, then a tonemap resolve hits the swapchain. GPU
 resources, descriptors, pipeline states, synchronization, and render-pass sequencing are managed explicitly through

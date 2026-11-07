@@ -137,7 +137,7 @@ project "Engine"
         links { "assimp-vc145-mt", "zlibstatic" }
 
     filter "system:windows"
-        defines { "_CRT_SECURE_NO_WARNINGS" }
+        defines { "_CRT_SECURE_NO_WARNINGS", "NOMINMAX" }
         links { "d3d12", "dxgi", "dxguid", "user32", "gdi32", "shell32", "ole32", "advapi32", "winmm", "setupapi" }
 
     filter {}
@@ -184,6 +184,7 @@ project "Sandbox"
         }
 
     filter "system:windows"
+        defines { "NOMINMAX" }
         links { "user32", "gdi32", "shell32", "ole32", "advapi32", "winmm", "setupapi" }
 
     filter {}

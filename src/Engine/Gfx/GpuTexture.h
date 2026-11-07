@@ -6,7 +6,7 @@
 
 namespace summer::gfx {
 
-// Owns a committed 2D texture resource and tracks its current resource state, so callers can
+// Owns a committed 2D texture or array and tracks its whole-resource state, so callers can
 // request a transition without hand-tracking barriers. This is the building block composed by
 // RenderTarget and DepthStencil (and later G-buffer attachments / shadow maps).
 class GpuTexture {
@@ -18,6 +18,7 @@ public:
         D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
         uint16_t mipLevels = 1;
+        uint16_t arraySize = 1; // number of 2D texture slices
         bool hasClearValue = false;      // RTs/DSs want an optimized clear value
         D3D12_CLEAR_VALUE clearValue{};
     };
